@@ -134,7 +134,11 @@ def api_info():
     if not is_youtube_url(url):
         return jsonify({'ok': False, 'error': 'Not a valid YouTube URL'}), 400
     try:
-        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+        ydl_info_opts = {
+            'quiet': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+        }
+        with yt_dlp.YoutubeDL(ydl_info_opts) as ydl:
             info = ydl.extract_info(url, download=False)
         mins = int(info.get('duration', 0) // 60)
         secs = int(info.get('duration', 0) % 60)
@@ -220,6 +224,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid):
             'outtmpl': video_tmpl,
             'quiet': True,
             'merge_output_format': 'mp4',
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
