@@ -1,4 +1,4 @@
-import os, uuid, threading, subprocess, zipfile, re, sqlite3, json
+import os, uuid, threading, subprocess, zipfile, re, sqlite3, json, tempfile
 from datetime import date
 from io import BytesIO
 from flask import Flask, request, jsonify, send_file, session
@@ -100,6 +100,22 @@ def check_ffmpeg():
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
+def get_ydl_opts(extra=None):
+    """Base yt-dlp options with cookie and bot-bypass support."""
+    opts = {
+        'quiet': True,
+        'extractor_args': {'youtube': {'player_client': ['ios', 'android', 'web']}},
+    }
+    cookies = os.environ.get('YOUTUBE_COOKIES', '').strip()
+    if cookies:
+        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+        tmp.write(cookies)
+        tmp.close()
+        opts['cookiefile'] = tmp.name
+    if extra:
+        opts.update(extra)
+    return opts
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -134,11 +150,7 @@ def api_info():
     if not is_youtube_url(url):
         return jsonify({'ok': False, 'error': 'Not a valid YouTube URL'}), 400
     try:
-        ydl_info_opts = {
-            'quiet': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-        }
-        with yt_dlp.YoutubeDL(ydl_info_opts) as ydl:
+        with yt_dlp.YoutubeDL(get_ydl_opts()) as ydl:
             info = ydl.extract_info(url, download=False)
         mins = int(info.get('duration', 0) // 60)
         secs = int(info.get('duration', 0) % 60)
@@ -219,13 +231,11 @@ def _process(job_id, url, num_clips, clip_len, quality, sid):
             f'/best'
         )
         video_tmpl = os.path.join(job_dir, 'video.%(ext)s')
-        ydl_opts = {
+        ydl_opts = get_ydl_opts({
             'format': fmt,
             'outtmpl': video_tmpl,
-            'quiet': True,
             'merge_output_format': 'mp4',
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-        }
+        })
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
