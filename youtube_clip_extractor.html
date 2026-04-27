@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClipCut — YouTube Clip Extractor</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0A0A0A;
+  --surface:#111111;
+  --surface2:#1A1A1A;
+  --border:#252525;
+  --accent:#E8FF47;
+  --accent2:#FF4747;
+  --text:#F5F5F0;
+  --muted:#666;
+  --muted2:#999;
+}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:'DM Sans',sans-serif;
+  min-height:100vh;
+  overflow-x:hidden;
+}
+body::before{
+  content:'';
+  position:fixed;inset:0;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events:none;z-index:0;opacity:0.4;
+}
+.app{position:relative;z-index:1;max-width:780px;margin:0 auto;padding:40px 24px 80px}
+
+/* nav */
+.nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:48px;animation:fadeUp 0.6s ease both}
+.logo{font-family:'Bebas Neue',sans-serif;font-size:48px;letter-spacing:2px;line-height:1;color:var(--text)}
+.logo span{color:var(--accent)}
+.tagline{font-size:13px;color:var(--muted2);margin-top:6px;font-family:'Space Mono',monospace;letter-spacing:0.5px}
+.nav-links{display:flex;align-items:center;gap:16px}
+.nav-link{font-size:13px;color:var(--muted2);text-decoration:none;font-family:'Space Mono',monospace;transition:color 0.2s}
+.nav-link:hover{color:var(--accent)}
+.btn-upgrade-nav{
+  background:var(--accent);color:#000;
+  border:none;border-radius:6px;
+  padding:8px 16px;
+  font-size:12px;font-weight:700;
+  cursor:pointer;
+  font-family:'DM Sans',sans-serif;
+  transition:all 0.15s;
+  text-decoration:none;
+}
+.btn-upgrade-nav:hover{background:#d4eb2e}
+
+/* usage meter */
+.usage-bar{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:14px 18px;
+  margin-bottom:28px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  animation:fadeUp 0.6s 0.05s ease both;
+  opacity:0;
+}
+.usage-info{display:flex;align-items:center;gap:12px;flex:1}
+.usage-label{font-size:12px;color:var(--muted2);font-family:'Space Mono',monospace;white-space:nowrap}
+.usage-track{flex:1;height:5px;background:var(--border);border-radius:3px;overflow:hidden;max-width:180px}
+.usage-fill{height:100%;background:var(--accent);border-radius:3px;transition:width 0.4s}
+.usage-fill.warn{background:#ff9d00}
+.usage-fill.full{background:var(--accent2)}
+.plan-badge{
+  font-size:10px;font-family:'Space Mono',monospace;font-weight:700;
+  padding:3px 10px;border-radius:20px;
+  background:var(--surface2);color:var(--muted2);
+  border:1px solid var(--border);
+  text-transform:uppercase;letter-spacing:1px;
+}
+.plan-badge.pro{border-color:var(--accent);color:var(--accent)}
+.plan-badge.business{border-color:#b47dff;color:#b47dff}
+.btn-upgrade-small{
+  background:transparent;
+  border:1px solid var(--accent);
+  color:var(--accent);
+  border-radius:6px;
+  padding:6px 14px;
+  font-size:11px;font-weight:700;
+  cursor:pointer;
+  font-family:'DM Sans',sans-serif;
+  transition:all 0.15s;
+  white-space:nowrap;
+}
+.btn-upgrade-small:hover{background:var(--accent);color:#000}
+
+/* steps */
+.steps{display:flex;align-items:center;gap:0;margin-bottom:40px;animation:fadeUp 0.6s 0.1s ease both;opacity:0}
+.step{display:flex;align-items:center;gap:8px;font-size:11px;font-family:'Space Mono',monospace;color:var(--muted)}
+.step.active{color:var(--accent)}
+.step.done{color:var(--muted2)}
+.step-num{width:24px;height:24px;border-radius:50%;border:1px solid currentColor;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0}
+.step.active .step-num{background:var(--accent);color:#000;border-color:var(--accent)}
+.step.done .step-num{background:var(--muted2);color:#000;border-color:var(--muted2)}
+.step-line{flex:1;height:1px;background:var(--border);margin:0 8px;min-width:20px}
+.step-line.done{background:var(--muted2)}
+
+/* input section */
+.section{animation:fadeUp 0.6s 0.2s ease both;opacity:0}
+.label{font-size:11px;font-family:'Space Mono',monospace;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px}
+.input-row{display:flex;gap:10px;margin-bottom:12px}
+.url-input{
+  flex:1;background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:14px 16px;color:var(--text);font-family:'DM Sans',sans-serif;
+  font-size:14px;outline:none;transition:border-color 0.2s;
+}
+.url-input::placeholder{color:var(--muted)}
+.url-input:focus{border-color:var(--accent)}
+.btn-analyze{
+  background:var(--accent);color:#000;border:none;border-radius:8px;
+  padding:14px 24px;font-family:'DM Sans',sans-serif;font-size:14px;
+  font-weight:600;cursor:pointer;white-space:nowrap;transition:all 0.15s;
+}
+.btn-analyze:hover{background:#d4eb2e;transform:translateY(-1px)}
+.btn-analyze:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+
+/* or / upload */
+.or-row{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.or-line{flex:1;height:1px;background:var(--border)}
+.or-text{font-size:11px;color:var(--muted);font-family:'Space Mono',monospace}
+.upload-zone{
+  border:1.5px dashed var(--border);border-radius:10px;padding:24px;
+  text-align:center;cursor:pointer;transition:all 0.2s;margin-bottom:28px;
+}
+.upload-zone:hover{border-color:var(--accent);background:rgba(232,255,71,0.03)}
+.upload-zone.drag{border-color:var(--accent);background:rgba(232,255,71,0.06)}
+.upload-icon{font-size:24px;margin-bottom:8px}
+.upload-text{font-size:13px;color:var(--muted2)}
+.upload-text span{color:var(--accent);cursor:pointer}
+.upload-sub{font-size:11px;color:var(--muted);margin-top:4px;font-family:'Space Mono',monospace}
+#fileInput{display:none}
+
+/* video preview */
+.video-preview{
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  overflow:hidden;margin-bottom:28px;display:none;
+}
+.video-info{display:flex;gap:14px;padding:16px}
+.video-thumb{width:80px;height:55px;background:var(--surface2);border-radius:6px;flex-shrink:0;object-fit:cover;display:flex;align-items:center;justify-content:center;font-size:22px}
+.video-thumb img{width:100%;height:100%;object-fit:cover;border-radius:6px}
+.video-title{font-size:14px;font-weight:500;color:var(--text);margin-bottom:4px;line-height:1.3}
+.video-dur{font-size:12px;color:var(--muted2);font-family:'Space Mono',monospace}
+
+/* config */
+.config-section{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:20px;display:none}
+.config-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.config-title::before{content:'';width:3px;height:14px;background:var(--accent);border-radius:2px;display:inline-block}
+.config-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.config-item label{font-size:11px;color:var(--muted);font-family:'Space Mono',monospace;letter-spacing:1px;text-transform:uppercase;display:block;margin-bottom:6px}
+.config-item select{
+  width:100%;background:var(--surface2);border:1px solid var(--border);
+  border-radius:6px;padding:10px 12px;color:var(--text);
+  font-family:'DM Sans',sans-serif;font-size:13px;outline:none;transition:border-color 0.2s;
+}
+.config-item select:focus{border-color:var(--accent)}
+.config-item select option{background:#1A1A1A}
+.config-item select:disabled{opacity:0.4;cursor:not-allowed}
+.locked-hint{font-size:10px;color:var(--accent);font-family:'Space Mono',monospace;margin-top:4px;display:none}
+
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)}
+.toggle-row:last-child{border-bottom:none;padding-bottom:0}
+.toggle-label{font-size:13px;color:var(--muted2)}
+.toggle{position:relative;width:40px;height:22px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;inset:0;background:var(--border);border-radius:22px;cursor:pointer;transition:0.2s}
+.toggle-slider:before{content:'';position:absolute;width:16px;height:16px;left:3px;top:3px;background:#666;border-radius:50%;transition:0.2s}
+.toggle input:checked+.toggle-slider{background:var(--accent)}
+.toggle input:checked+.toggle-slider:before{transform:translateX(18px);background:#000}
+.toggle input:disabled+.toggle-slider{opacity:0.35;cursor:not-allowed}
+
+.btn-generate{
+  width:100%;background:var(--accent);color:#000;border:none;border-radius:8px;
+  padding:16px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;
+  cursor:pointer;transition:all 0.2s;display:none;letter-spacing:0.3px;
+}
+.btn-generate:hover{background:#d4eb2e;transform:translateY(-1px)}
+
+/* progress */
+.progress-section{display:none;margin-bottom:20px}
+.progress-header{display:flex;justify-content:space-between;margin-bottom:8px;font-size:12px}
+.progress-label{color:var(--muted2);font-family:'Space Mono',monospace}
+.progress-pct{color:var(--accent);font-family:'Space Mono',monospace;font-weight:700}
+.progress-bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.progress-fill{height:100%;background:var(--accent);border-radius:3px;transition:width 0.3s;width:0%}
+.progress-log{margin-top:10px;font-size:11px;color:var(--muted);font-family:'Space Mono',monospace;line-height:1.8}
+.log-line{animation:fadeUp 0.3s ease}
+
+/* clips output */
+.clips-section{display:none;animation:fadeUp 0.5s ease}
+.clips-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.clips-title{font-family:'Bebas Neue',sans-serif;font-size:28px;letter-spacing:1px}
+.clips-count{font-size:12px;color:var(--muted2);font-family:'Space Mono',monospace}
+.clip-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  padding:16px;margin-bottom:12px;display:flex;gap:14px;align-items:flex-start;transition:border-color 0.2s;
+}
+.clip-num{font-family:'Bebas Neue',sans-serif;font-size:32px;color:var(--accent);line-height:1;width:32px;flex-shrink:0}
+.clip-body{flex:1}
+.clip-title{font-size:14px;font-weight:500;color:var(--text);margin-bottom:4px}
+.clip-time{font-size:12px;color:var(--muted2);font-family:'Space Mono',monospace;margin-bottom:8px}
+.clip-tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.clip-tag{font-size:10px;padding:3px 8px;border-radius:20px;background:var(--surface2);color:var(--muted2);border:1px solid var(--border)}
+.clip-tag.viral{border-color:var(--accent);color:var(--accent)}
+.clip-actions{display:flex;gap:8px}
+.btn-clip{padding:7px 14px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif;border:none;transition:all 0.15s}
+.btn-dl{background:var(--accent);color:#000}
+.btn-dl:hover{background:#d4eb2e}
+
+.dl-all{
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  padding:16px 20px;display:flex;align-items:center;justify-content:space-between;margin-top:16px;
+}
+.dl-all-text{font-size:13px;color:var(--muted2)}
+.dl-all-text b{color:var(--text)}
+.btn-dl-all{
+  background:var(--accent2);color:#fff;border:none;border-radius:6px;
+  padding:10px 20px;font-size:13px;font-weight:600;cursor:pointer;
+  font-family:'DM Sans',sans-serif;transition:all 0.15s;
+}
+.btn-dl-all:hover{background:#d03030;transform:translateY(-1px)}
+
+/* upgrade modal */
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,0.85);
+  z-index:200;display:flex;align-items:center;justify-content:center;
+  opacity:0;pointer-events:none;transition:opacity 0.25s;padding:24px;
+}
+.modal-overlay.open{opacity:1;pointer-events:all}
+.modal{
+  background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:32px;max-width:520px;width:100%;
+  transform:translateY(20px);transition:transform 0.25s;
+}
+.modal-overlay.open .modal{transform:translateY(0)}
+.modal-close{float:right;background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1}
+.modal-close:hover{color:var(--text)}
+.modal-title{font-family:'Bebas Neue',sans-serif;font-size:32px;letter-spacing:1px;margin-bottom:6px}
+.modal-sub{font-size:13px;color:var(--muted2);margin-bottom:24px}
+.modal-plans{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.modal-plan{
+  border:1px solid var(--border);border-radius:10px;padding:18px;cursor:pointer;
+  transition:all 0.2s;position:relative;
+}
+.modal-plan:hover{border-color:var(--accent)}
+.modal-plan.featured{border-color:var(--accent)}
+.modal-plan-badge{
+  position:absolute;top:-10px;left:50%;transform:translateX(-50%);
+  background:var(--accent);color:#000;font-size:10px;font-weight:700;
+  padding:2px 10px;border-radius:20px;font-family:'Space Mono',monospace;
+  white-space:nowrap;
+}
+.modal-plan-name{font-size:11px;font-family:'Space Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+.modal-plan-price{font-family:'Bebas Neue',sans-serif;font-size:36px;line-height:1;margin-bottom:2px}
+.modal-plan-price span{font-size:14px;font-family:'DM Sans',sans-serif;color:var(--muted2)}
+.modal-plan-features{margin-top:12px;font-size:12px;color:var(--muted2);line-height:2}
+.modal-plan-features li{list-style:none;display:flex;align-items:center;gap:6px}
+.modal-plan-features li::before{content:'✓';color:var(--accent);font-weight:700}
+.btn-modal-upgrade{
+  width:100%;margin-top:20px;background:var(--accent);color:#000;
+  border:none;border-radius:8px;padding:14px;
+  font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;
+  cursor:pointer;transition:all 0.15s;
+}
+.btn-modal-upgrade:hover{background:#d4eb2e}
+
+/* api key box */
+.api-key-box{
+  background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+  padding:12px 16px;margin-top:16px;font-family:'Space Mono',monospace;
+  font-size:12px;color:var(--accent);word-break:break-all;display:none;
+}
+.api-key-label{font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:1px}
+
+/* toast */
+.toast{
+  position:fixed;bottom:24px;right:24px;background:var(--accent);color:#000;
+  padding:12px 20px;border-radius:8px;font-size:13px;font-weight:600;
+  transform:translateY(80px);opacity:0;transition:all 0.3s;z-index:100;
+  font-family:'DM Sans',sans-serif;
+}
+.toast.show{transform:translateY(0);opacity:1}
+.toast.error{background:var(--accent2);color:#fff}
+
+@keyframes fadeUp{
+  from{opacity:0;transform:translateY(16px)}
+  to{opacity:1;transform:translateY(0)}
+}
+.spin{display:inline-block;width:16px;height:16px;border:2px solid #000;border-top-color:transparent;border-radius:50%;animation:spin 0.7s linear infinite;vertical-align:middle;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- nav -->
+  <div class="nav">
+    <div>
+      <div class="logo">CLIP<span>CUT</span></div>
+      <div class="tagline">// paste video → get clips. one job. done.</div>
+    </div>
+    <div class="nav-links">
+      <a href="/pricing" class="nav-link">Pricing</a>
+      <button class="btn-upgrade-nav" onclick="openUpgradeModal('pro')">Upgrade ↗</button>
+    </div>
+  </div>
+
+  <!-- usage meter -->
+  <div class="usage-bar" id="usageBar" style="display:none">
+    <div class="usage-info">
+      <span class="usage-label" id="usageLabel">0/3 clips today</span>
+      <div class="usage-track" id="usageTrack" style="display:none">
+        <div class="usage-fill" id="usageFill" style="width:0%"></div>
+      </div>
+    </div>
+    <span class="plan-badge" id="planBadge">FREE</span>
+    <button class="btn-upgrade-small" id="upgradeSmallBtn" onclick="openUpgradeModal('pro')" style="display:none">Upgrade →</button>
+  </div>
+
+  <!-- api key (business) -->
+  <div class="api-key-box" id="apiKeyBox">
+    <div class="api-key-label">Your API Key</div>
+    <div id="apiKeyValue"></div>
+  </div>
+
+  <div class="steps">
+    <div class="step active" id="s1"><div class="step-num">1</div> INPUT</div>
+    <div class="step-line" id="sl1"></div>
+    <div class="step" id="s2"><div class="step-num">2</div> CONFIGURE</div>
+    <div class="step-line" id="sl2"></div>
+    <div class="step" id="s3"><div class="step-num">3</div> CLIPS</div>
+  </div>
+
+  <div class="section">
+    <div class="label">YouTube URL</div>
+    <div class="input-row">
+      <input class="url-input" id="urlInput" type="text" placeholder="https://youtube.com/watch?v=..." />
+      <button class="btn-analyze" id="analyzeBtn" onclick="analyzeURL()">Analyze →</button>
+    </div>
+    <div class="or-row">
+      <div class="or-line"></div><div class="or-text">OR UPLOAD</div><div class="or-line"></div>
+    </div>
+    <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()"
+         ondragover="handleDragOver(event)" ondrop="handleDrop(event)" ondragleave="handleDragLeave(event)">
+      <div class="upload-icon">🎬</div>
+      <div class="upload-text">Drop video here or <span>browse file</span></div>
+      <div class="upload-sub">MP4 · MOV · AVI · up to 2GB</div>
+    </div>
+    <input type="file" id="fileInput" accept="video/*" onchange="handleFileUpload(event)" />
+  </div>
+
+  <div class="video-preview" id="videoPreview">
+    <div class="video-info">
+      <div class="video-thumb" id="videoThumb">🎥</div>
+      <div class="video-meta">
+        <div class="video-title" id="videoTitle">Loading...</div>
+        <div class="video-dur" id="videoDur">--:--</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="config-section" id="configSection">
+    <div class="config-title">Clip Settings</div>
+    <div class="config-grid" style="margin-bottom:16px">
+      <div class="config-item">
+        <label>Number of clips</label>
+        <select id="numClips">
+          <option value="3">3 clips</option>
+          <option value="5" selected>5 clips</option>
+          <option value="8">8 clips</option>
+          <option value="10">10 clips</option>
+        </select>
+      </div>
+      <div class="config-item">
+        <label>Clip length</label>
+        <select id="clipLen">
+          <option value="15">15 seconds</option>
+          <option value="30" selected>30 seconds</option>
+          <option value="60">60 seconds</option>
+          <option value="90">90 seconds</option>
+        </select>
+      </div>
+      <div class="config-item">
+        <label>Format</label>
+        <select id="clipFormat">
+          <option value="16:9" selected>16:9 — YouTube / landscape</option>
+          <option value="9:16">9:16 — Reels / TikTok</option>
+          <option value="1:1">1:1 — Square / Instagram</option>
+        </select>
+      </div>
+      <div class="config-item">
+        <label>Quality</label>
+        <select id="clipQuality">
+          <option value="720" selected>720p</option>
+          <option value="1080">1080p — Pro</option>
+          <option value="2160">4K — Pro</option>
+        </select>
+        <div class="locked-hint" id="qualityHint">⬆ Upgrade to unlock 1080p / 4K</div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <span class="toggle-label">Auto-detect best moments (AI)</span>
+      <label class="toggle"><input type="checkbox" id="aiDetect" checked><span class="toggle-slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <span class="toggle-label">Add subtitles to clips <span style="font-size:10px;color:var(--accent);font-family:'Space Mono',monospace"> PRO</span></span>
+      <label class="toggle"><input type="checkbox" id="addSubs" disabled><span class="toggle-slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <span class="toggle-label">Remove silence / dead air</span>
+      <label class="toggle"><input type="checkbox" id="removeSilence" checked><span class="toggle-slider"></span></label>
+    </div>
+  </div>
+
+  <button class="btn-generate" id="generateBtn" onclick="generateClips()">
+    ✂️ Generate Clips
+  </button>
+
+  <div class="progress-section" id="progressSection">
+    <div class="progress-header">
+      <span class="progress-label" id="progressLabel">Analyzing video...</span>
+      <span class="progress-pct" id="progressPct">0%</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-log" id="progressLog"></div>
+  </div>
+
+  <div class="clips-section" id="clipsSection">
+    <div class="clips-header">
+      <div class="clips-title">YOUR CLIPS</div>
+      <div class="clips-count" id="clipsCount"></div>
+    </div>
+    <div id="clipsList"></div>
+    <div class="dl-all">
+      <div class="dl-all-text">All clips ready · <b id="totalSize"></b></div>
+      <button class="btn-dl-all" onclick="downloadAll()">⬇ Download All (.zip)</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- upgrade modal -->
+<div class="modal-overlay" id="upgradeModal" onclick="closeUpgradeModal(event)">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <div class="modal-title">UPGRADE CLIPCUT</div>
+    <div class="modal-sub" id="modalSub">Get unlimited clips and higher quality exports.</div>
+    <div class="modal-plans">
+      <div class="modal-plan featured" onclick="checkout('pro')">
+        <div class="modal-plan-badge">MOST POPULAR</div>
+        <div class="modal-plan-name">Pro</div>
+        <div class="modal-plan-price">$9<span>/mo</span></div>
+        <ul class="modal-plan-features">
+          <li>Unlimited clips/day</li>
+          <li>1080p quality</li>
+          <li>Subtitles</li>
+          <li>Priority processing</li>
+        </ul>
+      </div>
+      <div class="modal-plan" onclick="checkout('business')">
+        <div class="modal-plan-name">Business</div>
+        <div class="modal-plan-price">$29<span>/mo</span></div>
+        <ul class="modal-plan-features">
+          <li>Everything in Pro</li>
+          <li>4K quality</li>
+          <li>API access key</li>
+          <li>Bulk processing</li>
+        </ul>
+      </div>
+    </div>
+    <button class="btn-modal-upgrade" id="modalUpgradeBtn" onclick="checkout('pro')">
+      Start Pro — $9/mo →
+    </button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let videoLoaded = false;
+let videoData   = null;
+let currentJobId = null;
+let pollTimer   = null;
+let userPlan    = 'free';
+let userMe      = null;
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+async function loadUser() {
+  try {
+    const res  = await fetch('/api/me', {credentials: 'include'});
+    const data = await res.json();
+    userMe   = data;
+    userPlan = data.plan;
+    renderUsageBar(data);
+    applyPlanRestrictions(data);
+
+    if (data.api_key) {
+      document.getElementById('apiKeyBox').style.display = 'block';
+      document.getElementById('apiKeyValue').textContent = data.api_key;
+    }
+  } catch(e) { /* non-fatal */ }
+}
+
+function renderUsageBar(data) {
+  const bar = document.getElementById('usageBar');
+  bar.style.display = 'flex';
+
+  const badge = document.getElementById('planBadge');
+  badge.textContent = data.plan.toUpperCase();
+  badge.className   = 'plan-badge ' + (data.plan !== 'free' ? data.plan : '');
+
+  if (data.plan === 'free') {
+    const used  = data.clips_used_today;
+    const limit = data.clips_per_day;
+    const pct   = Math.min(100, (used / limit) * 100);
+
+    document.getElementById('usageLabel').textContent  = `${used}/${limit} clips used today`;
+    document.getElementById('usageTrack').style.display = 'block';
+
+    const fill = document.getElementById('usageFill');
+    fill.style.width = pct + '%';
+    fill.className   = 'usage-fill' + (pct >= 100 ? ' full' : pct >= 66 ? ' warn' : '');
+
+    document.getElementById('upgradeSmallBtn').style.display = 'block';
+  } else {
+    document.getElementById('usageLabel').textContent  = 'Unlimited clips';
+    document.getElementById('usageTrack').style.display = 'none';
+    document.getElementById('upgradeSmallBtn').style.display = 'none';
+  }
+}
+
+function applyPlanRestrictions(data) {
+  const qualitySelect = document.getElementById('clipQuality');
+  const qualityHint   = document.getElementById('qualityHint');
+  const subsToggle    = document.getElementById('addSubs');
+
+  if (data.plan === 'free') {
+    // lock to 720p
+    qualitySelect.value = '720';
+    Array.from(qualitySelect.options).forEach(o => {
+      if (parseInt(o.value) > 720) o.disabled = true;
+    });
+    qualityHint.style.display = 'block';
+    subsToggle.disabled = true;
+  } else if (data.plan === 'pro') {
+    Array.from(qualitySelect.options).forEach(o => {
+      if (parseInt(o.value) > 1080) o.disabled = true;
+    });
+    subsToggle.disabled = false;
+  } else {
+    // business — everything unlocked
+    Array.from(qualitySelect.options).forEach(o => o.disabled = false);
+    subsToggle.disabled = false;
+  }
+}
+
+// run on load
+loadUser();
+
+// handle ?upgraded=1 redirect from Stripe
+if (new URLSearchParams(location.search).get('upgraded') === '1') {
+  history.replaceState({}, '', '/');
+  setTimeout(() => showToast('Welcome to Pro! Your plan is now active.'), 500);
+}
+
+// ---------------------------------------------------------------------------
+// Core flow
+// ---------------------------------------------------------------------------
+
+async function analyzeURL() {
+  const url = document.getElementById('urlInput').value.trim();
+  if (!url) { showToast('Please paste a YouTube URL first'); return; }
+
+  const btn = document.getElementById('analyzeBtn');
+  btn.innerHTML = '<span class="spin"></span>Analyzing...';
+  btn.disabled  = true;
+
+  try {
+    const res  = await fetch('/api/info', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({url}), credentials:'include',
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+
+    videoData = {url, title: data.title, dur: data.duration_str, thumbnail: data.thumbnail};
+    showVideoPreview(videoData);
+  } catch(e) {
+    showToast('Error: ' + e.message, true);
+  } finally {
+    btn.innerHTML = 'Analyze →';
+    btn.disabled  = false;
+  }
+}
+
+async function generateClips() {
+  if (!videoLoaded) { showToast('Please add a video first'); return; }
+
+  const btn = document.getElementById('generateBtn');
+  btn.innerHTML = '<span class="spin"></span>Processing...';
+  btn.disabled  = true;
+
+  document.getElementById('progressSection').style.display = 'block';
+  document.getElementById('clipsSection').style.display    = 'none';
+  document.getElementById('progressLog').innerHTML = '';
+  setStep(3);
+
+  try {
+    const res  = await fetch('/api/generate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      credentials:'include',
+      body: JSON.stringify({
+        url:       videoData.url,
+        num_clips: document.getElementById('numClips').value,
+        clip_len:  document.getElementById('clipLen').value,
+        quality:   document.getElementById('clipQuality').value,
+      }),
+    });
+    const data = await res.json();
+
+    if (res.status === 403 && data.error === 'limit_reached') {
+      showToast(data.message, true);
+      openUpgradeModal('pro', data.message);
+      btn.innerHTML = '✂️ Generate Clips';
+      btn.disabled  = false;
+      document.getElementById('progressSection').style.display = 'none';
+      return;
+    }
+
+    if (data.error) throw new Error(data.error);
+
+    currentJobId = data.job_id;
+    pollTimer    = setInterval(pollStatus, 1000);
+  } catch(e) {
+    showToast('Error: ' + e.message, true);
+    btn.innerHTML = '✂️ Generate Clips';
+    btn.disabled  = false;
+  }
+}
+
+async function pollStatus() {
+  if (!currentJobId) return;
+  try {
+    const res  = await fetch('/api/status/' + currentJobId);
+    const data = await res.json();
+
+    const logs = data.logs || [];
+    document.getElementById('progressFill').style.width = data.progress + '%';
+    document.getElementById('progressPct').textContent  = data.progress + '%';
+    if (logs.length) document.getElementById('progressLabel').textContent = logs[logs.length - 1];
+    document.getElementById('progressLog').innerHTML = logs.map(l => `<div class="log-line">→ ${l}</div>`).join('');
+
+    if (data.status === 'done') {
+      clearInterval(pollTimer);
+      showClips(data.clips);
+      loadUser(); // refresh usage meter
+      const btn = document.getElementById('generateBtn');
+      btn.innerHTML = '✂️ Re-generate Clips';
+      btn.disabled  = false;
+    } else if (data.status === 'error') {
+      clearInterval(pollTimer);
+      showToast('Error: ' + (data.error || 'Processing failed'), true);
+      const btn = document.getElementById('generateBtn');
+      btn.innerHTML = '✂️ Generate Clips';
+      btn.disabled  = false;
+    }
+  } catch(e) { /* ignore transient poll errors */ }
+}
+
+// ---------------------------------------------------------------------------
+// UI helpers
+// ---------------------------------------------------------------------------
+
+function showVideoPreview(v) {
+  document.getElementById('videoTitle').textContent = v.title;
+  document.getElementById('videoDur').textContent   = '⏱ Duration: ' + v.dur;
+  const thumbEl = document.getElementById('videoThumb');
+  thumbEl.innerHTML = v.thumbnail ? `<img src="${v.thumbnail}" alt="">` : '🎬';
+  document.getElementById('videoPreview').style.display  = 'block';
+  document.getElementById('configSection').style.display = 'block';
+  document.getElementById('generateBtn').style.display   = 'block';
+  setStep(2);
+  videoLoaded = true;
+  showToast('Video found — configure your clips below');
+}
+
+function showClips(clips) {
+  const fmt = document.getElementById('clipFormat').value;
+  const len = document.getElementById('clipLen').value;
+  let html = '';
+  clips.forEach((clip, i) => {
+    const m = Math.floor(clip.start / 60), s = clip.start % 60;
+    html += `<div class="clip-card" style="animation:fadeUp 0.4s ${i*0.1}s ease both;opacity:0">
+      <div class="clip-num">0${i+1}</div>
+      <div class="clip-body">
+        <div class="clip-title">Clip ${i+1}</div>
+        <div class="clip-time">${fmt} · ${clip.duration}s · ${clip.size_mb}MB · starts at ${m}:${s<10?'0'+s:s}</div>
+        <div class="clip-tags">
+          <span class="clip-tag viral">✂️ Ready</span>
+          <span class="clip-tag">${fmt}</span>
+        </div>
+        <div class="clip-actions">
+          <a href="${clip.url}" download="${clip.name}" class="btn-clip btn-dl">⬇ Download</a>
+        </div>
+      </div>
+    </div>`;
+  });
+  document.getElementById('clipsList').innerHTML    = html;
+  document.getElementById('clipsCount').textContent = clips.length + ' clips · ' + fmt + ' · ' + len + 's each';
+  const total = clips.reduce((s, c) => s + c.size_mb, 0).toFixed(0);
+  document.getElementById('totalSize').textContent  = total + 'MB total';
+  document.getElementById('clipsSection').style.display = 'block';
+  document.getElementById('clipsSection').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function handleFileUpload(){ showToast('Use a YouTube URL — local files not supported yet'); }
+function handleDragOver(e){ e.preventDefault(); document.getElementById('dropZone').classList.add('drag'); }
+function handleDragLeave(){ document.getElementById('dropZone').classList.remove('drag'); }
+function handleDrop(e){
+  e.preventDefault();
+  document.getElementById('dropZone').classList.remove('drag');
+  showToast('Paste your YouTube URL in the field above');
+}
+
+function downloadAll(){
+  if (!currentJobId) return;
+  window.location.href = '/api/zip/' + currentJobId;
+}
+
+function setStep(n){
+  for(let i=1;i<=3;i++){
+    document.getElementById('s'+i).className = 'step'+(i===n?' active':i<n?' done':'');
+  }
+  for(let i=1;i<=2;i++){
+    const el = document.getElementById('sl'+i);
+    if(el) el.className = 'step-line'+(i<n?' done':'');
+  }
+}
+
+function showToast(msg, isError=false){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className   = 'toast' + (isError ? ' error' : '');
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+// ---------------------------------------------------------------------------
+// Upgrade modal
+// ---------------------------------------------------------------------------
+
+function openUpgradeModal(defaultPlan='pro', subtitle='') {
+  const modal = document.getElementById('upgradeModal');
+  if (subtitle) document.getElementById('modalSub').textContent = subtitle;
+  modal.classList.add('open');
+  setModalPlan(defaultPlan);
+}
+function closeModal() { document.getElementById('upgradeModal').classList.remove('open'); }
+function closeUpgradeModal(e) { if(e.target === document.getElementById('upgradeModal')) closeModal(); }
+
+function setModalPlan(plan) {
+  const btn = document.getElementById('modalUpgradeBtn');
+  btn.textContent = plan === 'pro' ? 'Start Pro — $9/mo →' : 'Start Business — $29/mo →';
+  btn.onclick = () => checkout(plan);
+}
+
+async function checkout(plan) {
+  const btn = document.getElementById('modalUpgradeBtn');
+  btn.textContent = 'Redirecting...';
+  btn.disabled    = true;
+  try {
+    const res  = await fetch('/api/create-checkout-session', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      credentials:'include', body: JSON.stringify({plan}),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    window.location.href = data.url;
+  } catch(e) {
+    showToast('Error: ' + e.message, true);
+    btn.textContent = plan === 'pro' ? 'Start Pro — $9/mo →' : 'Start Business — $29/mo →';
+    btn.disabled    = false;
+  }
+}
+</script>
+</body>
+</html>

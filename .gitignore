@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+.venv/
+
+# App data (generated at runtime)
+clips/
+clipcut.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
