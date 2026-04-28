@@ -6,21 +6,21 @@ services:
     envVars:
       - key: SECRET_KEY
         generateValue: true
-      - key: STRIPE_SECRET_KEY
+      - key: PADDLE_CLIENT_TOKEN
         sync: false
-      - key: STRIPE_WEBHOOK_SECRET
+      - key: PADDLE_WEBHOOK_SECRET
         sync: false
-      - key: STRIPE_PRO_PRICE_ID
+      - key: PADDLE_PRO_PRICE_ID
         sync: false
-      - key: STRIPE_PRO_YEARLY_PRICE_ID
+      - key: PADDLE_PRO_YEARLY_PRICE_ID
         sync: false
-      - key: STRIPE_CREATOR_PRICE_ID
+      - key: PADDLE_CREATOR_PRICE_ID
         sync: false
-      - key: STRIPE_CREATOR_YEARLY_PRICE_ID
+      - key: PADDLE_CREATOR_YEARLY_PRICE_ID
         sync: false
-      - key: STRIPE_BIZ_PRICE_ID
+      - key: PADDLE_BIZ_PRICE_ID
         sync: false
-      - key: STRIPE_BIZ_YEARLY_PRICE_ID
+      - key: PADDLE_BIZ_YEARLY_PRICE_ID
         sync: false
       - key: YOUTUBE_COOKIES
         sync: false

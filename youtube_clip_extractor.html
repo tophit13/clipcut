@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ClipCut — YouTube Clip Extractor</title>
+<script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -543,6 +544,9 @@ let currentJobId = null;
 let pollTimer   = null;
 let userPlan    = 'free';
 let userMe      = null;
+let paddleReady = false;
+let paddlePrices = {};
+let paddleSessionId = '';
 
 // ---------------------------------------------------------------------------
 // Init
@@ -617,8 +621,28 @@ function applyPlanRestrictions(data) {
   }
 }
 
+async function initPaddle() {
+  try {
+    const cfg = await fetch('/api/paddle-config', {credentials:'include'}).then(r => r.json());
+    paddlePrices    = cfg.prices || {};
+    paddleSessionId = cfg.session_id || '';
+    if (cfg.client_token) {
+      Paddle.Initialize({
+        token: cfg.client_token,
+        eventCallback: function(e) {
+          if (e.name === 'checkout.completed') {
+            window.location.href = '/?upgraded=1';
+          }
+        }
+      });
+      paddleReady = true;
+    }
+  } catch(e) { /* paddle not configured yet */ }
+}
+
 // run on load
 loadUser();
+initPaddle();
 
 // handle ?upgraded=1 redirect from Stripe
 if (new URLSearchParams(location.search).get('upgraded') === '1') {
@@ -677,6 +701,7 @@ async function generateClips() {
         num_clips: document.getElementById('numClips').value,
         clip_len:  document.getElementById('clipLen').value,
         quality:   document.getElementById('clipQuality').value,
+        ai_detect: document.getElementById('aiDetect').checked,
       }),
     });
     const data = await res.json();
@@ -849,27 +874,17 @@ function updateModalBtn() {
   const labels = { pro: `Start Pro — $${p.pro}/mo`, creator: `Start Creator — $${p.creator}/mo`, business: `Start Business — $${p.business}/mo` };
   const btn = document.getElementById('modalUpgradeBtn');
   btn.textContent = (labels[modalPlan] || labels.pro) + ' →';
-  const suffix = modalBilling === 'yearly' ? ' (billed yearly)' : '';
-  btn.title = suffix;
 }
 
-async function checkoutModal() {
-  const btn = document.getElementById('modalUpgradeBtn');
-  btn.textContent = 'Redirecting...';
-  btn.disabled    = true;
-  try {
-    const res  = await fetch('/api/create-checkout-session', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      credentials:'include', body: JSON.stringify({plan: modalPlan, billing: modalBilling}),
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    window.location.href = data.url;
-  } catch(e) {
-    showToast('Error: ' + e.message, true);
-    updateModalBtn();
-    btn.disabled = false;
-  }
+function checkoutModal() {
+  if (!paddleReady) { showToast('Payments not configured yet', true); return; }
+  const priceId = (paddlePrices[modalPlan] || {})[modalBilling];
+  if (!priceId) { showToast('Price not set up yet', true); return; }
+  Paddle.Checkout.open({
+    items: [{ priceId: priceId, quantity: 1 }],
+    customData: { session_id: paddleSessionId },
+    successUrl: window.location.origin + '/?upgraded=1',
+  });
 }
 
 async function checkout(plan) {

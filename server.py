@@ -1,24 +1,23 @@
-import os, uuid, threading, subprocess, zipfile, re, sqlite3, json, tempfile
+import os, uuid, threading, subprocess, zipfile, re, sqlite3, json, tempfile, hmac, hashlib
 from datetime import date
 from io import BytesIO
 from flask import Flask, request, jsonify, send_file, session
 from flask_cors import CORS
 import yt_dlp
-import stripe
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-clipcut-2024')
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CORS(app, supports_credentials=True)
 
-stripe.api_key                   = os.environ.get('STRIPE_SECRET_KEY', '')
-STRIPE_WEBHOOK_SECRET            = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
-STRIPE_PRO_PRICE_ID              = os.environ.get('STRIPE_PRO_PRICE_ID', '')
-STRIPE_PRO_YEARLY_PRICE_ID       = os.environ.get('STRIPE_PRO_YEARLY_PRICE_ID', '')
-STRIPE_CREATOR_PRICE_ID          = os.environ.get('STRIPE_CREATOR_PRICE_ID', '')
-STRIPE_CREATOR_YEARLY_PRICE_ID   = os.environ.get('STRIPE_CREATOR_YEARLY_PRICE_ID', '')
-STRIPE_BIZ_PRICE_ID              = os.environ.get('STRIPE_BIZ_PRICE_ID', '')
-STRIPE_BIZ_YEARLY_PRICE_ID       = os.environ.get('STRIPE_BIZ_YEARLY_PRICE_ID', '')
+PADDLE_CLIENT_TOKEN          = os.environ.get('PADDLE_CLIENT_TOKEN', '')
+PADDLE_WEBHOOK_SECRET        = os.environ.get('PADDLE_WEBHOOK_SECRET', '')
+PADDLE_PRO_PRICE_ID          = os.environ.get('PADDLE_PRO_PRICE_ID', '')
+PADDLE_PRO_YEARLY_PRICE_ID   = os.environ.get('PADDLE_PRO_YEARLY_PRICE_ID', '')
+PADDLE_CREATOR_PRICE_ID      = os.environ.get('PADDLE_CREATOR_PRICE_ID', '')
+PADDLE_CREATOR_YEARLY_PRICE_ID = os.environ.get('PADDLE_CREATOR_YEARLY_PRICE_ID', '')
+PADDLE_BIZ_PRICE_ID          = os.environ.get('PADDLE_BIZ_PRICE_ID', '')
+PADDLE_BIZ_YEARLY_PRICE_ID   = os.environ.get('PADDLE_BIZ_YEARLY_PRICE_ID', '')
 
 CLIPS_DIR = 'clips'
 os.makedirs(CLIPS_DIR, exist_ok=True)
@@ -26,7 +25,7 @@ os.makedirs(CLIPS_DIR, exist_ok=True)
 DB_PATH = 'clipcut.db'
 
 PLAN_LIMITS = {
-    'free':     {'clips_per_day': 3,    'max_quality': 720,  'subtitles': False},
+    'free':     {'clips_per_day': 10,   'max_quality': 720,  'subtitles': False},
     'pro':      {'clips_per_day': None, 'max_quality': 1080, 'subtitles': True},
     'creator':  {'clips_per_day': None, 'max_quality': 2160, 'subtitles': True},
     'business': {'clips_per_day': None, 'max_quality': 2160, 'subtitles': True},
@@ -187,6 +186,7 @@ def api_me():
     limits = PLAN_LIMITS[plan]
     return jsonify({
         'plan': plan,
+        'session_id': sid,
         'clips_used_today': user['clips_used_today'],
         'clips_per_day': limits['clips_per_day'],
         'max_quality': limits['max_quality'],
@@ -229,9 +229,10 @@ def api_generate():
     plan    = user['plan']
     limits  = PLAN_LIMITS[plan]
 
-    num_clips = min(int(data.get('num_clips', 5)), 20)
-    clip_len  = min(int(data.get('clip_len', 30)), 300)
-    quality   = int(data.get('quality', 720))
+    num_clips  = min(int(data.get('num_clips', 5)), 20)
+    clip_len   = min(int(data.get('clip_len', 30)), 300)
+    quality    = int(data.get('quality', 720))
+    ai_detect  = bool(data.get('ai_detect', True))
 
     # Enforce quality ceiling for plan
     if quality > limits['max_quality']:
@@ -243,7 +244,7 @@ def api_generate():
         if remaining <= 0:
             return jsonify({
                 'error': 'limit_reached',
-                'message': f"You've used all {limits['clips_per_day']} free clips today. Upgrade for unlimited access.",
+                'message': f"You've used all {limits['clips_per_day']} clips today. Upgrade for unlimited access.",
             }), 403
         num_clips = min(num_clips, remaining)
 
@@ -255,14 +256,61 @@ def api_generate():
 
     t = threading.Thread(
         target=_process,
-        args=(job_id, url, num_clips, clip_len, quality, sid),
+        args=(job_id, url, num_clips, clip_len, quality, sid, ai_detect),
         daemon=True,
     )
     t.start()
 
     return jsonify({'job_id': job_id})
 
-def _process(job_id, url, num_clips, clip_len, quality, sid):
+def find_best_moments(video_path, duration, num_clips, clip_len):
+    """Analyze audio loudness with ffmpeg ebur128 to find the most energetic moments."""
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-i', video_path, '-af', 'ebur128=framelog=verbose', '-f', 'null', '-'],
+            capture_output=True, text=True, errors='ignore', timeout=180
+        )
+        output = result.stderr
+
+        # Parse lines: "t:  1.0 TARGET:-23 LUFS    M: -14.3 S: ..."
+        energy = {}
+        for line in output.split('\n'):
+            if 'M:' not in line or 't:' not in line:
+                continue
+            try:
+                t_str = line.split('t:')[1].strip().split()[0]
+                t_sec = int(float(t_str))
+                m_str = line.split('M:')[1].strip().split()[0]
+                m_val = float(m_str)
+                if m_val > -120:
+                    energy[t_sec] = max(energy.get(t_sec, -120), m_val)
+            except (ValueError, IndexError):
+                continue
+
+        if len(energy) < num_clips:
+            return None
+
+        usable    = max(duration - clip_len, 1)
+        min_gap   = max(clip_len + 5, duration // max(num_clips * 2, 1))
+        candidates = sorted(
+            [(t, v) for t, v in energy.items() if 0 <= t <= usable],
+            key=lambda x: x[1], reverse=True
+        )
+
+        selected = []
+        for t, _ in candidates:
+            if all(abs(t - s) >= min_gap for s in selected):
+                selected.append(t)
+            if len(selected) >= num_clips:
+                break
+
+        return sorted(selected) if len(selected) >= num_clips else None
+
+    except Exception:
+        return None
+
+
+def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True):
     job     = jobs[job_id]
     job_dir = os.path.join(CLIPS_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
@@ -302,12 +350,23 @@ def _process(job_id, url, num_clips, clip_len, quality, sid):
 
         duration = int(info.get('duration', 0))
         title    = info.get('title', 'clip')
-        log(f'Downloaded "{title}" ({duration//60}:{duration%60:02d}). Cutting clips...', 40)
+        log(f'Downloaded "{title}" ({duration//60}:{duration%60:02d}).', 38)
 
         usable = max(duration - clip_len, 1)
-        starts = [0] if num_clips == 1 else [
-            int(usable * i / (num_clips - 1)) for i in range(num_clips)
-        ]
+        starts = None
+
+        if ai_detect and num_clips > 1:
+            log('Scanning audio for viral moments...', 40)
+            starts = find_best_moments(video_path, duration, num_clips, clip_len)
+            if starts:
+                log(f'Found {len(starts)} high-energy moments. Cutting clips...', 44)
+            else:
+                log('Audio scan complete. Using smart distribution...', 42)
+
+        if not starts:
+            starts = [0] if num_clips == 1 else [
+                int(usable * i / (num_clips - 1)) for i in range(num_clips)
+            ]
 
         clips = []
         for i, start in enumerate(starts):
@@ -391,71 +450,77 @@ def api_zip(job_id):
     return send_file(buf, as_attachment=True, download_name='clips.zip', mimetype='application/zip')
 
 # ---------------------------------------------------------------------------
-# Stripe
+# Paddle
 # ---------------------------------------------------------------------------
 
-@app.route('/api/create-checkout-session', methods=['POST'])
-def create_checkout_session():
-    if not stripe.api_key:
-        return jsonify({'error': 'Payments not configured yet'}), 500
+PADDLE_PRICE_TO_PLAN = {}
 
-    sid     = get_session_id()
-    plan    = request.json.get('plan', 'pro')
-    billing = request.json.get('billing', 'monthly')
+def _build_price_map():
+    for pid, plan in [
+        (PADDLE_PRO_PRICE_ID,            'pro'),
+        (PADDLE_PRO_YEARLY_PRICE_ID,     'pro'),
+        (PADDLE_CREATOR_PRICE_ID,        'creator'),
+        (PADDLE_CREATOR_YEARLY_PRICE_ID, 'creator'),
+        (PADDLE_BIZ_PRICE_ID,            'business'),
+        (PADDLE_BIZ_YEARLY_PRICE_ID,     'business'),
+    ]:
+        if pid:
+            PADDLE_PRICE_TO_PLAN[pid] = plan
 
-    price_map = {
-        ('pro',      'monthly'): STRIPE_PRO_PRICE_ID,
-        ('pro',      'yearly'):  STRIPE_PRO_YEARLY_PRICE_ID,
-        ('creator',  'monthly'): STRIPE_CREATOR_PRICE_ID,
-        ('creator',  'yearly'):  STRIPE_CREATOR_YEARLY_PRICE_ID,
-        ('business', 'monthly'): STRIPE_BIZ_PRICE_ID,
-        ('business', 'yearly'):  STRIPE_BIZ_YEARLY_PRICE_ID,
-    }
-    price_id = price_map.get((plan, billing), '')
+_build_price_map()
 
-    if not price_id:
-        return jsonify({'error': 'Price not configured'}), 500
+@app.route('/api/paddle-config')
+def paddle_config():
+    sid = get_session_id()
+    return jsonify({
+        'client_token': PADDLE_CLIENT_TOKEN,
+        'session_id': sid,
+        'prices': {
+            'pro':      {'monthly': PADDLE_PRO_PRICE_ID,      'yearly': PADDLE_PRO_YEARLY_PRICE_ID},
+            'creator':  {'monthly': PADDLE_CREATOR_PRICE_ID,  'yearly': PADDLE_CREATOR_YEARLY_PRICE_ID},
+            'business': {'monthly': PADDLE_BIZ_PRICE_ID,      'yearly': PADDLE_BIZ_YEARLY_PRICE_ID},
+        },
+    })
+
+def _verify_paddle_signature(raw_body: bytes, signature: str, secret: str) -> bool:
+    try:
+        parts = dict(p.split('=', 1) for p in signature.split(';'))
+        ts = parts.get('ts', '')
+        h1 = parts.get('h1', '')
+        signed = f"{ts}:{raw_body.decode('utf-8')}"
+        expected = hmac.new(secret.encode(), signed.encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(h1, expected)
+    except Exception:
+        return False
+
+@app.route('/api/paddle-webhook', methods=['POST'])
+def paddle_webhook():
+    raw_body  = request.get_data()
+    signature = request.headers.get('Paddle-Signature', '')
+
+    if PADDLE_WEBHOOK_SECRET and not _verify_paddle_signature(raw_body, signature, PADDLE_WEBHOOK_SECRET):
+        return jsonify({'error': 'Invalid signature'}), 401
 
     try:
-        checkout = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            mode='subscription',
-            line_items=[{'price': price_id, 'quantity': 1}],
-            success_url=request.host_url + '?upgraded=1',
-            cancel_url=request.host_url + 'pricing',
-            metadata={'session_id': sid},
-        )
-        return jsonify({'url': checkout.url})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        event      = json.loads(raw_body)
+        event_type = event.get('event_type', '')
+        data       = event.get('data', {})
+    except Exception:
+        return jsonify({'error': 'Bad JSON'}), 400
 
-@app.route('/api/webhook', methods=['POST'])
-def stripe_webhook():
-    payload = request.get_data()
-    sig     = request.headers.get('Stripe-Signature', '')
+    if event_type in ('subscription.activated', 'subscription.created'):
+        custom_data = data.get('custom_data') or {}
+        sid         = custom_data.get('session_id')
+        email       = (data.get('customer') or {}).get('email', '')
+        customer_id = data.get('customer_id', '')
 
-    try:
-        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
-
-    if event['type'] == 'checkout.session.completed':
-        cs          = event['data']['object']
-        sid         = cs.get('metadata', {}).get('session_id')
-        email       = cs.get('customer_details', {}).get('email')
-        customer_id = cs.get('customer')
-
-        plan = 'pro'
+        price_id = ''
         try:
-            sub      = stripe.Subscription.retrieve(cs['subscription'])
-            price_id = sub['items']['data'][0]['price']['id']
-            if price_id in (STRIPE_CREATOR_PRICE_ID, STRIPE_CREATOR_YEARLY_PRICE_ID):
-                plan = 'creator'
-            elif price_id in (STRIPE_BIZ_PRICE_ID, STRIPE_BIZ_YEARLY_PRICE_ID):
-                plan = 'business'
-        except Exception:
+            price_id = data['items'][0]['price']['id']
+        except (KeyError, IndexError):
             pass
 
+        plan    = PADDLE_PRICE_TO_PLAN.get(price_id, 'pro')
         api_key = str(uuid.uuid4()).replace('-', '') if plan == 'business' else None
 
         if sid:
@@ -466,14 +531,15 @@ def stripe_webhook():
                 )
                 conn.commit()
 
-    elif event['type'] == 'customer.subscription.deleted':
-        customer_id = event['data']['object']['customer']
-        with get_db() as conn:
-            conn.execute(
-                "UPDATE users SET plan='free', api_key=NULL WHERE stripe_customer_id=?",
-                (customer_id,),
-            )
-            conn.commit()
+    elif event_type in ('subscription.canceled', 'subscription.cancelled'):
+        customer_id = data.get('customer_id', '')
+        if customer_id:
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE users SET plan='free', api_key=NULL WHERE stripe_customer_id=?",
+                    (customer_id,),
+                )
+                conn.commit()
 
     return jsonify({'ok': True})
 

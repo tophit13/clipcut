@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ClipCut — Pricing</title>
+<script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -160,8 +161,9 @@ body::before{
       <div class="plan-yearly-note" id="note-free"></div>
       <div class="plan-desc">Perfect for trying ClipCut and light personal use.</div>
       <ul class="plan-features">
-        <li class="yes">3 clips per day</li>
+        <li class="yes">10 clips per day</li>
         <li class="yes">720p quality</li>
+        <li>Unlimited clips/day</li>
         <li>1080p / 4K quality</li>
         <li>Subtitles</li>
         <li>API access</li>
@@ -269,11 +271,34 @@ body::before{
 
 <script>
 let billing = 'monthly';
+let paddlePrices = {};
+let paddleSessionId = '';
+let paddleReady = false;
 
 const PRICES = {
   monthly: { pro: 9,  creator: 19, biz: 29 },
   yearly:  { pro: 7,  creator: 15, biz: 24 },
 };
+
+async function initPaddle() {
+  try {
+    const cfg = await fetch('/api/paddle-config', {credentials:'include'}).then(r => r.json());
+    paddlePrices    = cfg.prices || {};
+    paddleSessionId = cfg.session_id || '';
+    if (cfg.client_token) {
+      Paddle.Initialize({
+        token: cfg.client_token,
+        eventCallback: function(e) {
+          if (e.name === 'checkout.completed') {
+            window.location.href = '/?upgraded=1';
+          }
+        }
+      });
+      paddleReady = true;
+    }
+  } catch(e) { /* not configured */ }
+}
+initPaddle();
 
 function setBilling(mode) {
   billing = mode;
@@ -309,26 +334,16 @@ function toggleFaq(el) {
   el.nextElementSibling.classList.toggle('open');
 }
 
-async function checkout(plan) {
-  const btnMap = {pro: 'btn-pro', creator: 'btn-creator', business: 'btn-biz'};
-  const btn = document.getElementById(btnMap[plan]);
-  const origText = btn.textContent;
-  btn.innerHTML  = '<span class="spin"></span>Redirecting...';
-  btn.disabled   = true;
-
-  try {
-    const res  = await fetch('/api/create-checkout-session', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      credentials:'include', body: JSON.stringify({plan, billing}),
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    window.location.href = data.url;
-  } catch(e) {
-    showToast('Error: ' + e.message, true);
-    btn.textContent = origText;
-    btn.disabled    = false;
-  }
+function checkout(plan) {
+  if (!paddleReady) { showToast('Payments not configured yet', true); return; }
+  const planKey = plan === 'business' ? 'business' : plan;
+  const priceId = (paddlePrices[planKey] || {})[billing];
+  if (!priceId) { showToast('Price not set up yet', true); return; }
+  Paddle.Checkout.open({
+    items: [{ priceId: priceId, quantity: 1 }],
+    customData: { session_id: paddleSessionId },
+    successUrl: window.location.origin + '/?upgraded=1',
+  });
 }
 
 function showToast(msg, isError=false){
