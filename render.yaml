@@ -22,5 +22,7 @@ services:
         sync: false
       - key: PADDLE_BIZ_YEARLY_PRICE_ID
         sync: false
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
       - key: YOUTUBE_COOKIES
         sync: false

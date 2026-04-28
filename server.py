@@ -10,6 +10,7 @@ app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-clipcut-2024')
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CORS(app, supports_credentials=True)
 
+ASSEMBLYAI_API_KEY           = os.environ.get('ASSEMBLYAI_API_KEY', '')
 PADDLE_CLIENT_TOKEN          = os.environ.get('PADDLE_CLIENT_TOKEN', '')
 PADDLE_WEBHOOK_SECRET        = os.environ.get('PADDLE_WEBHOOK_SECRET', '')
 PADDLE_PRO_PRICE_ID          = os.environ.get('PADDLE_PRO_PRICE_ID', '')
@@ -263,25 +264,20 @@ def api_generate():
 
     return jsonify({'job_id': job_id})
 
-def find_best_moments(video_path, duration, num_clips, clip_len):
-    """Analyze audio loudness with ffmpeg ebur128 to find the most energetic moments."""
+def _moments_ffmpeg(video_path, duration, num_clips, clip_len):
+    """Fallback: find high-energy moments using ffmpeg ebur128 loudness analysis."""
     try:
         result = subprocess.run(
             ['ffmpeg', '-i', video_path, '-af', 'ebur128=framelog=verbose', '-f', 'null', '-'],
             capture_output=True, text=True, errors='ignore', timeout=180
         )
-        output = result.stderr
-
-        # Parse lines: "t:  1.0 TARGET:-23 LUFS    M: -14.3 S: ..."
         energy = {}
-        for line in output.split('\n'):
+        for line in result.stderr.split('\n'):
             if 'M:' not in line or 't:' not in line:
                 continue
             try:
-                t_str = line.split('t:')[1].strip().split()[0]
-                t_sec = int(float(t_str))
-                m_str = line.split('M:')[1].strip().split()[0]
-                m_val = float(m_str)
+                t_sec = int(float(line.split('t:')[1].strip().split()[0]))
+                m_val = float(line.split('M:')[1].strip().split()[0])
                 if m_val > -120:
                     energy[t_sec] = max(energy.get(t_sec, -120), m_val)
             except (ValueError, IndexError):
@@ -290,15 +286,79 @@ def find_best_moments(video_path, duration, num_clips, clip_len):
         if len(energy) < num_clips:
             return None
 
-        usable    = max(duration - clip_len, 1)
-        min_gap   = max(clip_len + 5, duration // max(num_clips * 2, 1))
+        usable = max(duration - clip_len, 1)
+        min_gap = max(clip_len + 5, duration // max(num_clips * 2, 1))
         candidates = sorted(
             [(t, v) for t, v in energy.items() if 0 <= t <= usable],
             key=lambda x: x[1], reverse=True
         )
-
         selected = []
         for t, _ in candidates:
+            if all(abs(t - s) >= min_gap for s in selected):
+                selected.append(t)
+            if len(selected) >= num_clips:
+                break
+        return sorted(selected) if len(selected) >= num_clips else None
+    except Exception:
+        return None
+
+
+def _moments_assemblyai(video_path, duration, num_clips, clip_len):
+    """Use AssemblyAI auto-highlights + sentiment to find viral moments."""
+    try:
+        import assemblyai as aai
+        aai.settings.api_key = ASSEMBLYAI_API_KEY
+
+        # Extract mono 16kHz audio (much smaller upload than full video)
+        audio_path = video_path + '_ai.mp3'
+        subprocess.run(
+            ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame',
+             '-ar', '16000', '-ac', '1', '-q:a', '9', '-y', audio_path],
+            capture_output=True, timeout=120
+        )
+        if not os.path.exists(audio_path):
+            return None
+
+        config = aai.TranscriptionConfig(
+            auto_highlights=True,
+            sentiment_analysis=True,
+        )
+        transcript = aai.Transcriber().transcribe(audio_path, config=config)
+
+        try:
+            os.unlink(audio_path)
+        except Exception:
+            pass
+
+        if transcript.status == aai.TranscriptStatus.error:
+            return None
+
+        usable  = max(duration - clip_len, 1)
+        min_gap = max(clip_len + 5, duration // max(num_clips * 2, 1))
+        scores  = {}  # second -> score
+
+        # Auto-highlights: rank is 0-1, higher = more important
+        if transcript.auto_highlights and transcript.auto_highlights.results:
+            for h in transcript.auto_highlights.results:
+                for ts in h.timestamps:
+                    t = min(ts.start // 1000, usable)
+                    scores[t] = scores.get(t, 0) + h.rank * 100
+
+        # Sentiment peaks: non-neutral = emotional = viral
+        if transcript.sentiment_analysis:
+            for s in transcript.sentiment_analysis:
+                if s.sentiment.value != 'NEUTRAL':
+                    t = min(s.start // 1000, usable)
+                    scores[t] = scores.get(t, 0) + 30
+
+        if not scores:
+            return None
+
+        candidates = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        selected = []
+        for t, _ in candidates:
+            if t < 0:
+                continue
             if all(abs(t - s) >= min_gap for s in selected):
                 selected.append(t)
             if len(selected) >= num_clips:
@@ -308,6 +368,15 @@ def find_best_moments(video_path, duration, num_clips, clip_len):
 
     except Exception:
         return None
+
+
+def find_best_moments(video_path, duration, num_clips, clip_len):
+    """Try AssemblyAI first, fall back to ffmpeg loudness analysis."""
+    if ASSEMBLYAI_API_KEY:
+        result = _moments_assemblyai(video_path, duration, num_clips, clip_len)
+        if result:
+            return result
+    return _moments_ffmpeg(video_path, duration, num_clips, clip_len)
 
 
 def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True):
