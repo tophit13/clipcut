@@ -223,11 +223,10 @@ def _process(job_id, url, num_clips, clip_len, quality, sid):
     try:
         log('Downloading video from YouTube...', 5)
 
-        # Prefer a pre-merged mp4 to avoid ffmpeg for the download step
         fmt = (
-            f'best[height<={quality}][ext=mp4]'
-            f'/bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]'
+            f'bestvideo[height<={quality}]+bestaudio'
             f'/best[height<={quality}]'
+            f'/bestvideo+bestaudio'
             f'/best'
         )
         video_tmpl = os.path.join(job_dir, 'video.%(ext)s')
