@@ -104,11 +104,15 @@ def get_ydl_opts(extra=None):
     """Base yt-dlp options with cookie and bot-bypass support."""
     opts = {
         'quiet': True,
-        'extractor_args': {'youtube': {'player_client': ['ios', 'android', 'web']}},
+        'extractor_args': {'youtube': {'player_client': ['ios', 'android', 'tv_embedded', 'web']}},
+        'nocheckcertificate': True,
+        'no_warnings': True,
     }
     cookies = os.environ.get('YOUTUBE_COOKIES', '').strip()
     if cookies:
-        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+        # Render may escape newlines — fix them
+        cookies = cookies.replace('\\t', '\t').replace('\\n', '\n')
+        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
         tmp.write(cookies)
         tmp.close()
         opts['cookiefile'] = tmp.name
