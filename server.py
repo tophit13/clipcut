@@ -265,42 +265,55 @@ def api_generate():
 
     return jsonify({'job_id': job_id})
 
-def _moments_ffmpeg(video_path, duration, num_clips, clip_len):
-    """Fallback: find high-energy moments using raw PCM audio analysis."""
+def _moments_pcm(video_path, duration, num_clips, clip_len):
+    """Fast local audio energy analysis — temp file, any language, any length."""
+    import struct
     try:
-        import struct
-        rate = 4000  # 4kHz — enough for energy detection, small data
-        result = subprocess.run(
+        rate     = 2000  # 2kHz mono — ~10MB for 40 min, processes in seconds
+        pcm_path = video_path + '_nrg.raw'
+
+        subprocess.run(
             ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
-             '-ar', str(rate), '-ac', '1', '-f', 's16le', '-'],
-            capture_output=True, timeout=180
+             '-ar', str(rate), '-ac', '1', '-f', 's16le', '-y', pcm_path],
+            capture_output=True, timeout=120
         )
-        raw = result.stdout
-        if not raw:
+        if not os.path.exists(pcm_path) or os.path.getsize(pcm_path) == 0:
             return None
 
-        bps = 2  # bytes per sample (s16le)
+        with open(pcm_path, 'rb') as f:
+            raw = f.read()
+        try:
+            os.unlink(pcm_path)
+        except Exception:
+            pass
+
+        bps = 2
         sps = rate * bps
         total_secs = len(raw) // sps
-
         if total_secs < num_clips:
             return None
 
-        # Compute RMS energy per second
+        # RMS energy per second
         energy = {}
         for sec in range(total_secs):
             chunk = raw[sec * sps: (sec + 1) * sps]
-            if len(chunk) < bps:
-                continue
             n = len(chunk) // bps
+            if n == 0:
+                continue
             samples = struct.unpack(f'{n}h', chunk[:n * bps])
-            rms = (sum(s * s for s in samples) / n) ** 0.5
-            energy[sec] = rms
+            energy[sec] = (sum(s * s for s in samples) / n) ** 0.5
+
+        # Smooth over 10-second window — finds sustained excitement not random spikes
+        win = 5
+        smoothed = {
+            sec: sum(energy.get(s, 0) for s in range(sec - win, sec + win + 1)) / (2 * win + 1)
+            for sec in energy
+        }
 
         usable  = max(duration - clip_len, 1)
         min_gap = max(clip_len + 5, duration // max(num_clips * 2, 1))
         candidates = sorted(
-            [(t, v) for t, v in energy.items() if 0 <= t <= usable],
+            [(t, v) for t, v in smoothed.items() if 0 <= t <= usable],
             key=lambda x: x[1], reverse=True
         )
         selected = []
@@ -418,12 +431,12 @@ def _moments_assemblyai(video_path, duration, num_clips, clip_len):
 
 
 def find_best_moments(video_path, duration, num_clips, clip_len):
-    """Try AssemblyAI first, fall back to ffmpeg loudness analysis."""
-    if ASSEMBLYAI_API_KEY:
+    """AssemblyAI for short videos (≤15 min); fast local PCM for everything else."""
+    if ASSEMBLYAI_API_KEY and duration <= 900:
         result = _moments_assemblyai(video_path, duration, num_clips, clip_len)
         if result:
             return result
-    return _moments_ffmpeg(video_path, duration, num_clips, clip_len)
+    return _moments_pcm(video_path, duration, num_clips, clip_len)
 
 
 def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True):
