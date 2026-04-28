@@ -101,18 +101,28 @@ def check_ffmpeg():
         return False
 
 def get_ydl_opts(extra=None):
-    """Base yt-dlp options with cookie and bot-bypass support."""
+    """Base yt-dlp options — impersonate iOS YouTube app to bypass bot detection."""
     opts = {
         'quiet': True,
-        'extractor_args': {'youtube': {'player_client': ['ios', 'android', 'tv_embedded', 'web']}},
         'nocheckcertificate': True,
         'no_warnings': True,
+        # Fully impersonate the iOS YouTube app — bypasses datacenter IP blocks
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios'],
+                'player_skip': ['webpage', 'configs'],
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)',
+            'X-YouTube-Client-Name': '5',
+            'X-YouTube-Client-Version': '19.29.1',
+        },
     }
+    # Optionally layer cookies on top if provided
     cookies = os.environ.get('YOUTUBE_COOKIES', '').strip()
     if cookies:
-        # Render may escape newlines — fix them
         cookies = cookies.replace('\\t', '\t').replace('\\n', '\n')
-        # Ensure Netscape header is present
         if not cookies.startswith('# Netscape'):
             cookies = '# Netscape HTTP Cookie File\n' + cookies
         tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
