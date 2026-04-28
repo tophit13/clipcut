@@ -421,20 +421,27 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True):
         title    = info.get('title', 'clip')
         log(f'Downloaded "{title}" ({duration//60}:{duration%60:02d}).', 38)
 
-        usable = max(duration - clip_len, 1)
         starts = None
 
         if ai_detect and num_clips > 1:
-            log('Scanning audio for viral moments...', 40)
+            if ASSEMBLYAI_API_KEY:
+                log('AI analyzing speech and emotion for viral moments...', 40)
+            else:
+                log('Scanning audio energy for best moments...', 40)
             starts = find_best_moments(video_path, duration, num_clips, clip_len)
             if starts:
-                log(f'Found {len(starts)} high-energy moments. Cutting clips...', 44)
+                log(f'AI found {len(starts)} viral moments at: {", ".join(f"{s//60}:{s%60:02d}" for s in starts)}', 44)
             else:
-                log('Audio scan complete. Using smart distribution...', 42)
+                log('AI scan done — using optimized distribution...', 42)
 
         if not starts:
-            starts = [0] if num_clips == 1 else [
-                int(usable * i / (num_clips - 1)) for i in range(num_clips)
+            # Spread clips avoiding first/last 5% of video
+            margin = max(int(duration * 0.05), 10)
+            safe_start = margin
+            safe_end   = max(duration - clip_len - margin, safe_start + clip_len)
+            safe_range = safe_end - safe_start
+            starts = [safe_start] if num_clips == 1 else [
+                safe_start + int(safe_range * i / (num_clips - 1)) for i in range(num_clips)
             ]
 
         clips = []
