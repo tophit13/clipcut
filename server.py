@@ -111,7 +111,13 @@ def get_ydl_opts(extra=None):
                 'player_client': ['ios', 'android', 'tv_embedded'],
             }
         },
+        'impersonate': 'chrome',
     }
+    # Optional proxy (set PROXY_URL=http://user:pass@host:port in env)
+    proxy = os.environ.get('PROXY_URL', '').strip()
+    if proxy:
+        opts['proxy'] = proxy
+
     # Optionally layer cookies on top if provided
     cookies = os.environ.get('YOUTUBE_COOKIES', '').strip()
     if cookies:
