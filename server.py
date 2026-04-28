@@ -11,10 +11,14 @@ app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-clipcut-2024')
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CORS(app, supports_credentials=True)
 
-stripe.api_key              = os.environ.get('STRIPE_SECRET_KEY', '')
-STRIPE_WEBHOOK_SECRET       = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
-STRIPE_PRO_PRICE_ID         = os.environ.get('STRIPE_PRO_PRICE_ID', '')
-STRIPE_BIZ_PRICE_ID         = os.environ.get('STRIPE_BIZ_PRICE_ID', '')
+stripe.api_key                   = os.environ.get('STRIPE_SECRET_KEY', '')
+STRIPE_WEBHOOK_SECRET            = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
+STRIPE_PRO_PRICE_ID              = os.environ.get('STRIPE_PRO_PRICE_ID', '')
+STRIPE_PRO_YEARLY_PRICE_ID       = os.environ.get('STRIPE_PRO_YEARLY_PRICE_ID', '')
+STRIPE_CREATOR_PRICE_ID          = os.environ.get('STRIPE_CREATOR_PRICE_ID', '')
+STRIPE_CREATOR_YEARLY_PRICE_ID   = os.environ.get('STRIPE_CREATOR_YEARLY_PRICE_ID', '')
+STRIPE_BIZ_PRICE_ID              = os.environ.get('STRIPE_BIZ_PRICE_ID', '')
+STRIPE_BIZ_YEARLY_PRICE_ID       = os.environ.get('STRIPE_BIZ_YEARLY_PRICE_ID', '')
 
 CLIPS_DIR = 'clips'
 os.makedirs(CLIPS_DIR, exist_ok=True)
@@ -24,6 +28,7 @@ DB_PATH = 'clipcut.db'
 PLAN_LIMITS = {
     'free':     {'clips_per_day': 3,    'max_quality': 720,  'subtitles': False},
     'pro':      {'clips_per_day': None, 'max_quality': 1080, 'subtitles': True},
+    'creator':  {'clips_per_day': None, 'max_quality': 2160, 'subtitles': True},
     'business': {'clips_per_day': None, 'max_quality': 2160, 'subtitles': True},
 }
 
@@ -160,6 +165,18 @@ def index():
 @app.route('/pricing')
 def pricing():
     return send_file(os.path.join(BASE_DIR, 'pricing.html'))
+
+@app.route('/terms')
+def terms():
+    return send_file(os.path.join(BASE_DIR, 'terms.html'))
+
+@app.route('/privacy')
+def privacy():
+    return send_file(os.path.join(BASE_DIR, 'privacy.html'))
+
+@app.route('/refund')
+def refund():
+    return send_file(os.path.join(BASE_DIR, 'refund.html'))
 
 @app.route('/api/me')
 def api_me():
@@ -384,7 +401,17 @@ def create_checkout_session():
 
     sid     = get_session_id()
     plan    = request.json.get('plan', 'pro')
-    price_id = STRIPE_PRO_PRICE_ID if plan == 'pro' else STRIPE_BIZ_PRICE_ID
+    billing = request.json.get('billing', 'monthly')
+
+    price_map = {
+        ('pro',      'monthly'): STRIPE_PRO_PRICE_ID,
+        ('pro',      'yearly'):  STRIPE_PRO_YEARLY_PRICE_ID,
+        ('creator',  'monthly'): STRIPE_CREATOR_PRICE_ID,
+        ('creator',  'yearly'):  STRIPE_CREATOR_YEARLY_PRICE_ID,
+        ('business', 'monthly'): STRIPE_BIZ_PRICE_ID,
+        ('business', 'yearly'):  STRIPE_BIZ_YEARLY_PRICE_ID,
+    }
+    price_id = price_map.get((plan, billing), '')
 
     if not price_id:
         return jsonify({'error': 'Price not configured'}), 500
@@ -422,7 +449,9 @@ def stripe_webhook():
         try:
             sub      = stripe.Subscription.retrieve(cs['subscription'])
             price_id = sub['items']['data'][0]['price']['id']
-            if price_id == STRIPE_BIZ_PRICE_ID:
+            if price_id in (STRIPE_CREATOR_PRICE_ID, STRIPE_CREATOR_YEARLY_PRICE_ID):
+                plan = 'creator'
+            elif price_id in (STRIPE_BIZ_PRICE_ID, STRIPE_BIZ_YEARLY_PRICE_ID):
                 plan = 'business'
         except Exception:
             pass

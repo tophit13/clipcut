@@ -82,6 +82,7 @@ body::before{
   text-transform:uppercase;letter-spacing:1px;
 }
 .plan-badge.pro{border-color:var(--accent);color:var(--accent)}
+.plan-badge.creator{border-color:#b47dff;color:#b47dff}
 .plan-badge.business{border-color:#b47dff;color:#b47dff}
 .btn-upgrade-small{
   background:transparent;
@@ -241,31 +242,47 @@ body::before{
 .modal-overlay.open{opacity:1;pointer-events:all}
 .modal{
   background:var(--surface);border:1px solid var(--border);border-radius:16px;
-  padding:32px;max-width:520px;width:100%;
+  padding:32px;max-width:620px;width:100%;
   transform:translateY(20px);transition:transform 0.25s;
 }
 .modal-overlay.open .modal{transform:translateY(0)}
 .modal-close{float:right;background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1}
 .modal-close:hover{color:var(--text)}
 .modal-title{font-family:'Bebas Neue',sans-serif;font-size:32px;letter-spacing:1px;margin-bottom:6px}
-.modal-sub{font-size:13px;color:var(--muted2);margin-bottom:24px}
-.modal-plans{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.modal-sub{font-size:13px;color:var(--muted2);margin-bottom:16px}
+
+/* billing toggle in modal */
+.modal-billing{display:flex;align-items:center;gap:10px;margin-bottom:20px}
+.modal-billing-opt{font-size:12px;color:var(--muted2);font-family:'Space Mono',monospace;cursor:pointer;transition:color 0.2s}
+.modal-billing-opt.active{color:var(--text)}
+.toggle-sm{position:relative;width:36px;height:20px;flex-shrink:0;cursor:pointer}
+.toggle-sm input{opacity:0;width:0;height:0}
+.toggle-sm-slider{position:absolute;inset:0;background:var(--border);border-radius:20px;transition:0.2s}
+.toggle-sm-slider:before{content:'';position:absolute;width:14px;height:14px;left:3px;top:3px;background:#666;border-radius:50%;transition:0.2s}
+.toggle-sm input:checked+.toggle-sm-slider{background:var(--accent)}
+.toggle-sm input:checked+.toggle-sm-slider:before{transform:translateX(16px);background:#000}
+.save-pill{background:var(--accent);color:#000;font-size:9px;font-weight:700;padding:2px 6px;border-radius:20px;font-family:'Space Mono',monospace}
+
+.modal-plans{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+@media(max-width:540px){.modal-plans{grid-template-columns:1fr}}
 .modal-plan{
-  border:1px solid var(--border);border-radius:10px;padding:18px;cursor:pointer;
+  border:1px solid var(--border);border-radius:10px;padding:16px;cursor:pointer;
   transition:all 0.2s;position:relative;
 }
-.modal-plan:hover{border-color:var(--accent)}
+.modal-plan:hover{border-color:var(--muted)}
 .modal-plan.featured{border-color:var(--accent)}
+.modal-plan.creator-plan{border-color:#b47dff}
 .modal-plan-badge{
   position:absolute;top:-10px;left:50%;transform:translateX(-50%);
-  background:var(--accent);color:#000;font-size:10px;font-weight:700;
+  background:var(--accent);color:#000;font-size:9px;font-weight:700;
   padding:2px 10px;border-radius:20px;font-family:'Space Mono',monospace;
   white-space:nowrap;
 }
+.modal-plan-badge.purple{background:#b47dff;color:#fff}
 .modal-plan-name{font-size:11px;font-family:'Space Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
-.modal-plan-price{font-family:'Bebas Neue',sans-serif;font-size:36px;line-height:1;margin-bottom:2px}
-.modal-plan-price span{font-size:14px;font-family:'DM Sans',sans-serif;color:var(--muted2)}
-.modal-plan-features{margin-top:12px;font-size:12px;color:var(--muted2);line-height:2}
+.modal-plan-price{font-family:'Bebas Neue',sans-serif;font-size:32px;line-height:1;margin-bottom:2px}
+.modal-plan-price span{font-size:13px;font-family:'DM Sans',sans-serif;color:var(--muted2)}
+.modal-plan-features{margin-top:10px;font-size:11px;color:var(--muted2);line-height:2}
 .modal-plan-features li{list-style:none;display:flex;align-items:center;gap:6px}
 .modal-plan-features li::before{content:'✓';color:var(--accent);font-weight:700}
 .btn-modal-upgrade{
@@ -458,36 +475,66 @@ body::before{
     <button class="modal-close" onclick="closeModal()">✕</button>
     <div class="modal-title">UPGRADE CLIPCUT</div>
     <div class="modal-sub" id="modalSub">Get unlimited clips and higher quality exports.</div>
+    <div class="modal-billing">
+      <span class="modal-billing-opt active" id="mLblMonthly" onclick="setModalBilling('monthly')">Monthly</span>
+      <label class="toggle-sm">
+        <input type="checkbox" id="modalBillingToggle" onchange="setModalBilling(this.checked?'yearly':'monthly')">
+        <span class="toggle-sm-slider"></span>
+      </label>
+      <span class="modal-billing-opt" id="mLblYearly" onclick="setModalBilling('yearly');document.getElementById('modalBillingToggle').checked=true">Yearly</span>
+      <span class="save-pill">2 MONTHS FREE</span>
+    </div>
     <div class="modal-plans">
-      <div class="modal-plan featured" onclick="checkout('pro')">
-        <div class="modal-plan-badge">MOST POPULAR</div>
+      <div class="modal-plan featured" onclick="selectModalPlan('pro')">
+        <div class="modal-plan-badge">POPULAR</div>
         <div class="modal-plan-name">Pro</div>
-        <div class="modal-plan-price">$9<span>/mo</span></div>
+        <div class="modal-plan-price" id="mPricePro">$9<span>/mo</span></div>
         <ul class="modal-plan-features">
           <li>Unlimited clips/day</li>
           <li>1080p quality</li>
           <li>Subtitles</li>
-          <li>Priority processing</li>
+          <li>Priority</li>
         </ul>
       </div>
-      <div class="modal-plan" onclick="checkout('business')">
-        <div class="modal-plan-name">Business</div>
-        <div class="modal-plan-price">$29<span>/mo</span></div>
+      <div class="modal-plan creator-plan" onclick="selectModalPlan('creator')">
+        <div class="modal-plan-badge purple">NEW</div>
+        <div class="modal-plan-name">Creator</div>
+        <div class="modal-plan-price" id="mPriceCreator">$19<span>/mo</span></div>
         <ul class="modal-plan-features">
-          <li>Everything in Pro</li>
+          <li>Unlimited clips/day</li>
           <li>4K quality</li>
-          <li>API access key</li>
+          <li>Subtitles</li>
+          <li>AI detection</li>
+        </ul>
+      </div>
+      <div class="modal-plan" onclick="selectModalPlan('business')">
+        <div class="modal-plan-name">Business</div>
+        <div class="modal-plan-price" id="mPriceBiz">$29<span>/mo</span></div>
+        <ul class="modal-plan-features">
+          <li>Everything in Creator</li>
+          <li>4K quality</li>
+          <li>API key</li>
           <li>Bulk processing</li>
         </ul>
       </div>
     </div>
-    <button class="btn-modal-upgrade" id="modalUpgradeBtn" onclick="checkout('pro')">
+    <button class="btn-modal-upgrade" id="modalUpgradeBtn" onclick="checkoutModal()">
       Start Pro — $9/mo →
     </button>
   </div>
 </div>
 
 <div class="toast" id="toast"></div>
+
+<footer style="position:relative;z-index:1;text-align:center;padding:32px 24px;border-top:1px solid #1a1a1a;margin-top:40px">
+  <div style="font-size:11px;color:#555;font-family:'Space Mono',monospace;display:flex;align-items:center;justify-content:center;gap:24px;flex-wrap:wrap">
+    <span>© 2026 ClipCut</span>
+    <a href="/terms" style="color:#555;text-decoration:none" onmouseover="this.style.color='#E8FF47'" onmouseout="this.style.color='#555'">Terms of Service</a>
+    <a href="/privacy" style="color:#555;text-decoration:none" onmouseover="this.style.color='#E8FF47'" onmouseout="this.style.color='#555'">Privacy Policy</a>
+    <a href="/refund" style="color:#555;text-decoration:none" onmouseover="this.style.color='#E8FF47'" onmouseout="this.style.color='#555'">Refund Policy</a>
+    <a href="/pricing" style="color:#555;text-decoration:none" onmouseover="this.style.color='#E8FF47'" onmouseout="this.style.color='#555'">Pricing</a>
+  </div>
+</footer>
 
 <script>
 let videoLoaded = false;
@@ -564,7 +611,7 @@ function applyPlanRestrictions(data) {
     });
     subsToggle.disabled = false;
   } else {
-    // business — everything unlocked
+    // creator / business — everything unlocked
     Array.from(qualitySelect.options).forEach(o => o.disabled = false);
     subsToggle.disabled = false;
   }
@@ -576,7 +623,7 @@ loadUser();
 // handle ?upgraded=1 redirect from Stripe
 if (new URLSearchParams(location.search).get('upgraded') === '1') {
   history.replaceState({}, '', '/');
-  setTimeout(() => showToast('Welcome to Pro! Your plan is now active.'), 500);
+  setTimeout(() => showToast('Your plan is now active. Welcome!'), 500);
 }
 
 // ---------------------------------------------------------------------------
@@ -765,38 +812,68 @@ function showToast(msg, isError=false){
 // Upgrade modal
 // ---------------------------------------------------------------------------
 
+const MODAL_PRICES = {
+  monthly: { pro: 9, creator: 19, business: 29 },
+  yearly:  { pro: 7, creator: 15, business: 24 },
+};
+let modalBilling = 'monthly';
+let modalPlan    = 'pro';
+
 function openUpgradeModal(defaultPlan='pro', subtitle='') {
   const modal = document.getElementById('upgradeModal');
   if (subtitle) document.getElementById('modalSub').textContent = subtitle;
   modal.classList.add('open');
-  setModalPlan(defaultPlan);
+  selectModalPlan(defaultPlan);
 }
 function closeModal() { document.getElementById('upgradeModal').classList.remove('open'); }
 function closeUpgradeModal(e) { if(e.target === document.getElementById('upgradeModal')) closeModal(); }
 
-function setModalPlan(plan) {
-  const btn = document.getElementById('modalUpgradeBtn');
-  btn.textContent = plan === 'pro' ? 'Start Pro — $9/mo →' : 'Start Business — $29/mo →';
-  btn.onclick = () => checkout(plan);
+function setModalBilling(mode) {
+  modalBilling = mode;
+  document.getElementById('mLblMonthly').classList.toggle('active', mode === 'monthly');
+  document.getElementById('mLblYearly').classList.toggle('active', mode === 'yearly');
+  const p = MODAL_PRICES[mode];
+  document.getElementById('mPricePro').innerHTML     = `$${p.pro}<span>/mo</span>`;
+  document.getElementById('mPriceCreator').innerHTML = `$${p.creator}<span>/mo</span>`;
+  document.getElementById('mPriceBiz').innerHTML     = `$${p.business}<span>/mo</span>`;
+  updateModalBtn();
 }
 
-async function checkout(plan) {
+function selectModalPlan(plan) {
+  modalPlan = plan;
+  updateModalBtn();
+}
+
+function updateModalBtn() {
+  const p = MODAL_PRICES[modalBilling];
+  const labels = { pro: `Start Pro — $${p.pro}/mo`, creator: `Start Creator — $${p.creator}/mo`, business: `Start Business — $${p.business}/mo` };
+  const btn = document.getElementById('modalUpgradeBtn');
+  btn.textContent = (labels[modalPlan] || labels.pro) + ' →';
+  const suffix = modalBilling === 'yearly' ? ' (billed yearly)' : '';
+  btn.title = suffix;
+}
+
+async function checkoutModal() {
   const btn = document.getElementById('modalUpgradeBtn');
   btn.textContent = 'Redirecting...';
   btn.disabled    = true;
   try {
     const res  = await fetch('/api/create-checkout-session', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      credentials:'include', body: JSON.stringify({plan}),
+      credentials:'include', body: JSON.stringify({plan: modalPlan, billing: modalBilling}),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     window.location.href = data.url;
   } catch(e) {
     showToast('Error: ' + e.message, true);
-    btn.textContent = plan === 'pro' ? 'Start Pro — $9/mo →' : 'Start Business — $29/mo →';
-    btn.disabled    = false;
+    updateModalBtn();
+    btn.disabled = false;
   }
+}
+
+async function checkout(plan) {
+  openUpgradeModal(plan);
 }
 </script>
 </body>
