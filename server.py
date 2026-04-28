@@ -266,28 +266,38 @@ def api_generate():
     return jsonify({'job_id': job_id})
 
 def _moments_ffmpeg(video_path, duration, num_clips, clip_len):
-    """Fallback: find high-energy moments using ffmpeg ebur128 loudness analysis."""
+    """Fallback: find high-energy moments using raw PCM audio analysis."""
     try:
+        import struct
+        rate = 4000  # 4kHz — enough for energy detection, small data
         result = subprocess.run(
-            ['ffmpeg', '-i', video_path, '-af', 'ebur128=framelog=verbose', '-f', 'null', '-'],
-            capture_output=True, text=True, errors='ignore', timeout=180
+            ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
+             '-ar', str(rate), '-ac', '1', '-f', 's16le', '-'],
+            capture_output=True, timeout=180
         )
-        energy = {}
-        for line in result.stderr.split('\n'):
-            if 'M:' not in line or 't:' not in line:
-                continue
-            try:
-                t_sec = int(float(line.split('t:')[1].strip().split()[0]))
-                m_val = float(line.split('M:')[1].strip().split()[0])
-                if m_val > -120:
-                    energy[t_sec] = max(energy.get(t_sec, -120), m_val)
-            except (ValueError, IndexError):
-                continue
-
-        if len(energy) < num_clips:
+        raw = result.stdout
+        if not raw:
             return None
 
-        usable = max(duration - clip_len, 1)
+        bps = 2  # bytes per sample (s16le)
+        sps = rate * bps
+        total_secs = len(raw) // sps
+
+        if total_secs < num_clips:
+            return None
+
+        # Compute RMS energy per second
+        energy = {}
+        for sec in range(total_secs):
+            chunk = raw[sec * sps: (sec + 1) * sps]
+            if len(chunk) < bps:
+                continue
+            n = len(chunk) // bps
+            samples = struct.unpack(f'{n}h', chunk[:n * bps])
+            rms = (sum(s * s for s in samples) / n) ** 0.5
+            energy[sec] = rms
+
+        usable  = max(duration - clip_len, 1)
         min_gap = max(clip_len + 5, duration // max(num_clips * 2, 1))
         candidates = sorted(
             [(t, v) for t, v in energy.items() if 0 <= t <= usable],
@@ -305,13 +315,13 @@ def _moments_ffmpeg(video_path, duration, num_clips, clip_len):
 
 
 def _moments_assemblyai(video_path, duration, num_clips, clip_len):
-    """Use AssemblyAI REST API to find viral moments via highlights + sentiment."""
+    """Use AssemblyAI word density + highlights to find viral moments (any language)."""
     try:
-        base   = 'https://api.assemblyai.com/v2'
-        hdrs   = {'authorization': ASSEMBLYAI_API_KEY, 'content-type': 'application/json'}
+        base     = 'https://api.assemblyai.com/v2'
+        hdrs     = {'authorization': ASSEMBLYAI_API_KEY, 'content-type': 'application/json'}
         hdrs_bin = {'authorization': ASSEMBLYAI_API_KEY}
 
-        # Extract small mono audio file for upload
+        # Extract small mono audio
         audio_path = video_path + '_ai.mp3'
         subprocess.run(
             ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame',
@@ -321,30 +331,35 @@ def _moments_assemblyai(video_path, duration, num_clips, clip_len):
         if not os.path.exists(audio_path):
             return None
 
-        # Upload audio
+        # Upload
         with open(audio_path, 'rb') as f:
-            up = req_lib.post(base + '/upload', headers=hdrs_bin, data=f, timeout=120)
+            up = req_lib.post(base + '/upload', headers=hdrs_bin, data=f, timeout=180)
         try:
             os.unlink(audio_path)
         except Exception:
             pass
         if up.status_code != 200:
             return None
-        upload_url = up.json()['upload_url']
+        upload_url = up.json().get('upload_url')
+        if not upload_url:
+            return None
 
-        # Submit transcription job
+        # Submit — request word timestamps, highlights, sentiment
         tr = req_lib.post(base + '/transcript', headers=hdrs, json={
-            'audio_url':        upload_url,
-            'auto_highlights':  True,
+            'audio_url':          upload_url,
+            'auto_highlights':    True,
             'sentiment_analysis': True,
-            'speech_model':     'nano',
+            'word_boost':         [],
         }, timeout=30)
         if tr.status_code != 200:
             return None
-        tid = tr.json()['id']
+        tid = tr.json().get('id')
+        if not tid:
+            return None
 
-        # Poll until complete (up to 10 min)
-        for _ in range(120):
+        # Poll (max 12 min)
+        poll = {}
+        for _ in range(144):
             time.sleep(5)
             poll = req_lib.get(f'{base}/transcript/{tid}', headers=hdrs, timeout=30).json()
             if poll.get('status') == 'completed':
@@ -358,19 +373,30 @@ def _moments_assemblyai(video_path, duration, num_clips, clip_len):
         min_gap = max(clip_len + 5, duration // max(num_clips * 2, 1))
         scores  = {}
 
-        # Auto-highlights: rank 0-1 — higher means more viral
+        # Signal 1: word density per second (works for any language)
+        words = poll.get('words', [])
+        density = {}
+        for w in words:
+            t = min(w.get('start', 0) // 1000, usable)
+            density[t] = density.get(t, 0) + 1
+        if density:
+            max_d = max(density.values()) or 1
+            for t, cnt in density.items():
+                scores[t] = scores.get(t, 0) + (cnt / max_d) * 60
+
+        # Signal 2: auto-highlights (English works best, bonus signal)
         hl = poll.get('auto_highlights_result', {})
         if hl.get('status') == 'success':
             for h in hl.get('results', []):
                 for ts in h.get('timestamps', []):
                     t = min(ts['start'] // 1000, usable)
-                    scores[t] = scores.get(t, 0) + h.get('rank', 0) * 100
+                    scores[t] = scores.get(t, 0) + h.get('rank', 0) * 80
 
-        # Sentiment peaks — emotion = engagement
+        # Signal 3: emotional sentiment peaks
         for s in poll.get('sentiment_analysis_results', []):
             if s.get('sentiment') != 'NEUTRAL':
                 t = min(s.get('start', 0) // 1000, usable)
-                scores[t] = scores.get(t, 0) + 30
+                scores[t] = scores.get(t, 0) + 25
 
         if not scores:
             return None
