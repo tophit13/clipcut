@@ -90,8 +90,26 @@ jobs = {}
 # Helpers
 # ---------------------------------------------------------------------------
 
+INVIDIOUS = [
+    'https://invidious.kavin.rocks',
+    'https://yewtu.be',
+    'https://inv.riverside.rocks',
+    'https://invidious.nerdvpn.de',
+]
+
 def is_youtube_url(url):
     return bool(re.match(r'https?://(www\.)?(youtube\.com/watch|youtu\.be/)', url))
+
+def extract_video_id(url):
+    m = re.search(r'(?:v=|youtu\.be/)([^&\n?#]+)', url)
+    return m.group(1) if m else None
+
+def to_invidious_url(url):
+    """Convert YouTube URL to Invidious URL to bypass IP-level bot detection."""
+    vid = extract_video_id(url)
+    if vid:
+        return f'{INVIDIOUS[0]}/watch?v={vid}'
+    return url
 
 def check_ffmpeg():
     try:
@@ -165,8 +183,9 @@ def api_info():
     if not is_youtube_url(url):
         return jsonify({'ok': False, 'error': 'Not a valid YouTube URL'}), 400
     try:
+        fetch_url = to_invidious_url(url)
         with yt_dlp.YoutubeDL(get_ydl_opts()) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(fetch_url, download=False)
         mins = int(info.get('duration', 0) // 60)
         secs = int(info.get('duration', 0) % 60)
         return jsonify({
@@ -238,6 +257,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid):
     try:
         log('Downloading video from YouTube...', 5)
 
+        fetch_url = to_invidious_url(url)
         fmt = (
             f'bestvideo[height<={quality}]+bestaudio'
             f'/best[height<={quality}]'
@@ -252,7 +272,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid):
         })
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            info = ydl.extract_info(fetch_url, download=True)
 
         video_path = None
         for f in os.listdir(job_dir):
