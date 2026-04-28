@@ -112,6 +112,9 @@ def get_ydl_opts(extra=None):
     if cookies:
         # Render may escape newlines — fix them
         cookies = cookies.replace('\\t', '\t').replace('\\n', '\n')
+        # Ensure Netscape header is present
+        if not cookies.startswith('# Netscape'):
+            cookies = '# Netscape HTTP Cookie File\n' + cookies
         tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
         tmp.write(cookies)
         tmp.close()
