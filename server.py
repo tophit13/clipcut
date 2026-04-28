@@ -1,4 +1,5 @@
-import os, uuid, threading, subprocess, zipfile, re, sqlite3, json, tempfile, hmac, hashlib
+import os, uuid, threading, subprocess, zipfile, re, sqlite3, json, tempfile, hmac, hashlib, time
+import requests as req_lib
 from datetime import date
 from io import BytesIO
 from flask import Flask, request, jsonify, send_file, session
@@ -304,12 +305,13 @@ def _moments_ffmpeg(video_path, duration, num_clips, clip_len):
 
 
 def _moments_assemblyai(video_path, duration, num_clips, clip_len):
-    """Use AssemblyAI auto-highlights + sentiment to find viral moments."""
+    """Use AssemblyAI REST API to find viral moments via highlights + sentiment."""
     try:
-        import assemblyai as aai
-        aai.settings.api_key = ASSEMBLYAI_API_KEY
+        base   = 'https://api.assemblyai.com/v2'
+        hdrs   = {'authorization': ASSEMBLYAI_API_KEY, 'content-type': 'application/json'}
+        hdrs_bin = {'authorization': ASSEMBLYAI_API_KEY}
 
-        # Extract mono 16kHz audio (much smaller upload than full video)
+        # Extract small mono audio file for upload
         audio_path = video_path + '_ai.mp3'
         subprocess.run(
             ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame',
@@ -319,37 +321,56 @@ def _moments_assemblyai(video_path, duration, num_clips, clip_len):
         if not os.path.exists(audio_path):
             return None
 
-        config = aai.TranscriptionConfig(
-            auto_highlights=True,
-            sentiment_analysis=True,
-        )
-        transcript = aai.Transcriber().transcribe(audio_path, config=config)
-
+        # Upload audio
+        with open(audio_path, 'rb') as f:
+            up = req_lib.post(base + '/upload', headers=hdrs_bin, data=f, timeout=120)
         try:
             os.unlink(audio_path)
         except Exception:
             pass
+        if up.status_code != 200:
+            return None
+        upload_url = up.json()['upload_url']
 
-        if transcript.status == aai.TranscriptStatus.error:
+        # Submit transcription job
+        tr = req_lib.post(base + '/transcript', headers=hdrs, json={
+            'audio_url':        upload_url,
+            'auto_highlights':  True,
+            'sentiment_analysis': True,
+            'speech_model':     'nano',
+        }, timeout=30)
+        if tr.status_code != 200:
+            return None
+        tid = tr.json()['id']
+
+        # Poll until complete (up to 10 min)
+        for _ in range(120):
+            time.sleep(5)
+            poll = req_lib.get(f'{base}/transcript/{tid}', headers=hdrs, timeout=30).json()
+            if poll.get('status') == 'completed':
+                break
+            if poll.get('status') == 'error':
+                return None
+        else:
             return None
 
         usable  = max(duration - clip_len, 1)
         min_gap = max(clip_len + 5, duration // max(num_clips * 2, 1))
-        scores  = {}  # second -> score
+        scores  = {}
 
-        # Auto-highlights: rank is 0-1, higher = more important
-        if transcript.auto_highlights and transcript.auto_highlights.results:
-            for h in transcript.auto_highlights.results:
-                for ts in h.timestamps:
-                    t = min(ts.start // 1000, usable)
-                    scores[t] = scores.get(t, 0) + h.rank * 100
+        # Auto-highlights: rank 0-1 — higher means more viral
+        hl = poll.get('auto_highlights_result', {})
+        if hl.get('status') == 'success':
+            for h in hl.get('results', []):
+                for ts in h.get('timestamps', []):
+                    t = min(ts['start'] // 1000, usable)
+                    scores[t] = scores.get(t, 0) + h.get('rank', 0) * 100
 
-        # Sentiment peaks: non-neutral = emotional = viral
-        if transcript.sentiment_analysis:
-            for s in transcript.sentiment_analysis:
-                if s.sentiment.value != 'NEUTRAL':
-                    t = min(s.start // 1000, usable)
-                    scores[t] = scores.get(t, 0) + 30
+        # Sentiment peaks — emotion = engagement
+        for s in poll.get('sentiment_analysis_results', []):
+            if s.get('sentiment') != 'NEUTRAL':
+                t = min(s.get('start', 0) // 1000, usable)
+                scores[t] = scores.get(t, 0) + 30
 
         if not scores:
             return None
