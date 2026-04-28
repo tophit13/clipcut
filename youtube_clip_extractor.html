@@ -702,6 +702,7 @@ async function generateClips() {
         clip_len:  document.getElementById('clipLen').value,
         quality:   document.getElementById('clipQuality').value,
         ai_detect: document.getElementById('aiDetect').checked,
+        ratio:     document.getElementById('clipFormat').value,
       }),
     });
     const data = await res.json();

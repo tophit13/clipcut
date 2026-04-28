@@ -235,6 +235,7 @@ def api_generate():
     clip_len   = min(int(data.get('clip_len', 30)), 300)
     quality    = int(data.get('quality', 720))
     ai_detect  = bool(data.get('ai_detect', True))
+    ratio      = data.get('ratio', '16:9')  # '16:9' or '9:16'
 
     # Enforce quality ceiling for plan
     if quality > limits['max_quality']:
@@ -258,7 +259,7 @@ def api_generate():
 
     t = threading.Thread(
         target=_process,
-        args=(job_id, url, num_clips, clip_len, quality, sid, ai_detect),
+        args=(job_id, url, num_clips, clip_len, quality, sid, ai_detect, ratio),
         daemon=True,
     )
     t.start()
@@ -266,58 +267,35 @@ def api_generate():
     return jsonify({'job_id': job_id})
 
 def _moments_pcm(video_path, duration, num_clips, clip_len):
-    """Fast local audio energy analysis — temp file, any language, any length."""
+    """Sampling-based audio energy — probes N short clips, never reads full file."""
     import struct
     try:
-        rate     = 2000  # 2kHz mono — ~10MB for 40 min, processes in seconds
-        pcm_path = video_path + '_nrg.raw'
+        usable    = max(duration - clip_len, 1)
+        n_samples = min(num_clips * 8, 50)
+        sample_times = [int(usable * i / max(n_samples - 1, 1)) for i in range(n_samples)]
 
-        subprocess.run(
-            ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
-             '-ar', str(rate), '-ac', '1', '-f', 's16le', '-y', pcm_path],
-            capture_output=True, timeout=120
-        )
-        if not os.path.exists(pcm_path) or os.path.getsize(pcm_path) == 0:
-            return None
-
-        with open(pcm_path, 'rb') as f:
-            raw = f.read()
-        try:
-            os.unlink(pcm_path)
-        except Exception:
-            pass
-
-        bps = 2
-        sps = rate * bps
-        total_secs = len(raw) // sps
-        if total_secs < num_clips:
-            return None
-
-        # RMS energy per second
-        energy = {}
-        for sec in range(total_secs):
-            chunk = raw[sec * sps: (sec + 1) * sps]
-            n = len(chunk) // bps
-            if n == 0:
+        energies = []
+        for t in sample_times:
+            r = subprocess.run(
+                ['ffmpeg', '-ss', str(t), '-i', video_path, '-t', '8',
+                 '-vn', '-acodec', 'pcm_s16le', '-ar', '4000', '-ac', '1', '-f', 's16le', '-'],
+                capture_output=True, timeout=20,
+            )
+            raw = r.stdout
+            if not raw:
                 continue
-            samples = struct.unpack(f'{n}h', chunk[:n * bps])
-            energy[sec] = (sum(s * s for s in samples) / n) ** 0.5
+            n = len(raw) // 2
+            samples = struct.unpack(f'{n}h', raw[:n * 2])
+            rms = (sum(s * s for s in samples) / max(n, 1)) ** 0.5
+            energies.append((t, rms))
 
-        # Smooth over 10-second window — finds sustained excitement not random spikes
-        win = 5
-        smoothed = {
-            sec: sum(energy.get(s, 0) for s in range(sec - win, sec + win + 1)) / (2 * win + 1)
-            for sec in energy
-        }
+        if len(energies) < num_clips:
+            return None
 
-        usable  = max(duration - clip_len, 1)
         min_gap = max(clip_len + 5, duration // max(num_clips * 2, 1))
-        candidates = sorted(
-            [(t, v) for t, v in smoothed.items() if 0 <= t <= usable],
-            key=lambda x: x[1], reverse=True
-        )
+        energies.sort(key=lambda x: x[1], reverse=True)
         selected = []
-        for t, _ in candidates:
+        for t, _ in energies:
             if all(abs(t - s) >= min_gap for s in selected):
                 selected.append(t)
             if len(selected) >= num_clips:
@@ -439,7 +417,7 @@ def find_best_moments(video_path, duration, num_clips, clip_len):
     return _moments_pcm(video_path, duration, num_clips, clip_len)
 
 
-def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True):
+def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, ratio='16:9'):
     job     = jobs[job_id]
     job_dir = os.path.join(CLIPS_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
@@ -511,9 +489,18 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True):
             clip_path = os.path.join(job_dir, clip_name)
             log(f'Cutting clip {i+1}/{num_clips} (starts {start//60}:{start%60:02d})...', pct)
 
+            vf_filter = (
+                'crop=ih*9/16:ih' if ratio == '9:16' else
+                'crop=ih:ih'      if ratio == '1:1'  else
+                None
+            )
             cmd = [
                 'ffmpeg', '-ss', str(start), '-i', video_path,
                 '-t', str(clip_len),
+            ]
+            if vf_filter:
+                cmd += ['-vf', vf_filter]
+            cmd += [
                 '-c:v', 'libx264', '-c:a', 'aac',
                 '-movflags', '+faststart',
                 '-y', clip_path,
