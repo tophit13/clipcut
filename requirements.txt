@@ -3,4 +3,3 @@ flask-cors
 yt-dlp
 gunicorn
 stripe
-curl_cffi
