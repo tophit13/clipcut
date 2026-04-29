@@ -730,7 +730,7 @@ async function generateClips() {
 async function pollStatus() {
   if (!currentJobId) return;
   try {
-    const res  = await fetch('/api/status/' + currentJobId);
+    const res  = await fetch('/api/status/' + currentJobId, { credentials: 'include' });
     const data = await res.json();
 
     const logs = data.logs || [];

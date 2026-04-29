@@ -457,19 +457,12 @@ def _moments_from_captions(info, duration, num_clips, clip_len):
             transcript_list = YouTubeTranscriptApi.list_transcripts(vid)
             transcript = None
             # Prefer manually created, then auto-generated
-            try:
-                transcript = transcript_list.find_manually_created_transcript(
-                    transcript_list._manually_created_transcripts.keys()
-                ).fetch()
-            except Exception:
-                pass
-            if not transcript:
-                try:
-                    transcript = transcript_list.find_generated_transcript(
-                        transcript_list._generated_transcripts.keys()
-                    ).fetch()
-                except Exception:
-                    pass
+            manual = [t for t in transcript_list if not t.is_generated]
+            auto   = [t for t in transcript_list if t.is_generated]
+            if manual:
+                transcript = manual[0].fetch()
+            elif auto:
+                transcript = auto[0].fetch()
             if not transcript:
                 return None
         except (NoTranscriptFound, TranscriptsDisabled):
@@ -632,7 +625,9 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             if vf_filter:
                 cmd += ['-vf', vf_filter]
             cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
-            subprocess.run(cmd, capture_output=True)
+            result = subprocess.run(cmd, capture_output=True)
+            if result.returncode != 0:
+                log(f'Warning: ffmpeg failed for clip {i+1}: {result.stderr.decode(errors="replace")[-300:]}', pct)
             try:
                 os.unlink(raw_path)
             except Exception:
