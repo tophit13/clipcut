@@ -1,6 +1,5 @@
 flask
 flask-cors
 yt-dlp
-yt-dlp-youtube-oauth2
 gunicorn
 requests
