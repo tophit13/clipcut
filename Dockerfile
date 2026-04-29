@@ -14,6 +14,4 @@ COPY . .
 
 RUN mkdir -p clips
 
-COPY start.sh /app/start.sh
-RUN chmod +x /app/start.sh
-CMD ["/app/start.sh"]
+CMD ["gunicorn", "server:app", "--config", "/app/gunicorn.conf.py"]
