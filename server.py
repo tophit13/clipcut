@@ -12,6 +12,15 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CORS(app, supports_credentials=True)
 
 ASSEMBLYAI_API_KEY           = os.environ.get('ASSEMBLYAI_API_KEY', '')
+YOUTUBE_OAUTH_TOKEN          = os.environ.get('YOUTUBE_OAUTH_TOKEN', '').strip()
+
+# Write OAuth token to cache dir so yt-dlp can find it on startup
+YT_CACHE_DIR = '/tmp/yt-dlp-cache'
+if YOUTUBE_OAUTH_TOKEN:
+    _oauth_dir = os.path.join(YT_CACHE_DIR, 'youtube-oauth2')
+    os.makedirs(_oauth_dir, exist_ok=True)
+    with open(os.path.join(_oauth_dir, 'token.json'), 'w') as _f:
+        _f.write(YOUTUBE_OAUTH_TOKEN)
 PADDLE_CLIENT_TOKEN          = os.environ.get('PADDLE_CLIENT_TOKEN', '')
 PADDLE_WEBHOOK_SECRET        = os.environ.get('PADDLE_WEBHOOK_SECRET', '')
 PADDLE_PRO_PRICE_ID          = os.environ.get('PADDLE_PRO_PRICE_ID', '')
@@ -149,11 +158,17 @@ def get_ydl_opts(extra=None):
             }
         },
         'proxy': '',  # disable any system/env proxy by default
+        'cachedir': YT_CACHE_DIR,
     }
-    # Override proxy if user explicitly set PROXY_URL
-    proxy = os.environ.get('PROXY_URL', '').strip()
-    if proxy:
-        opts['proxy'] = proxy
+    # Use OAuth2 if token is available (no proxy needed)
+    if YOUTUBE_OAUTH_TOKEN:
+        opts['username'] = 'oauth2'
+        opts['password'] = ''
+    else:
+        # Fall back to proxy if set
+        proxy = os.environ.get('PROXY_URL', '').strip()
+        if proxy:
+            opts['proxy'] = proxy
 
     # Optionally layer cookies on top if provided
     cookies = os.environ.get('YOUTUBE_COOKIES', '').strip()
