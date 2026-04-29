@@ -97,10 +97,10 @@ jobs = {}
 # ---------------------------------------------------------------------------
 
 INVIDIOUS = [
-    'https://invidious.kavin.rocks',
     'https://yewtu.be',
     'https://inv.riverside.rocks',
     'https://invidious.nerdvpn.de',
+    'https://iv.ggtyler.dev',
 ]
 
 def is_youtube_url(url):
@@ -110,12 +110,25 @@ def extract_video_id(url):
     m = re.search(r'(?:v=|youtu\.be/)([^&\n?#]+)', url)
     return m.group(1) if m else None
 
-def to_invidious_url(url):
-    """Convert YouTube URL to Invidious URL to bypass IP-level bot detection."""
+def get_fetch_urls(url):
+    """Direct YouTube first, then Invidious fallbacks."""
     vid = extract_video_id(url)
+    urls = [url]
     if vid:
-        return f'{INVIDIOUS[0]}/watch?v={vid}'
-    return url
+        for inst in INVIDIOUS:
+            urls.append(f'{inst}/watch?v={vid}')
+    return urls
+
+def ydl_extract(urls, opts):
+    """Try each URL in sequence; return info dict from first that works."""
+    last_err = None
+    for u in urls:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(u, download=False)
+        except Exception as e:
+            last_err = e
+    raise last_err
 
 def check_ffmpeg():
     try:
@@ -202,9 +215,7 @@ def api_info():
     if not is_youtube_url(url):
         return jsonify({'ok': False, 'error': 'Not a valid YouTube URL'}), 400
     try:
-        fetch_url = to_invidious_url(url)
-        with yt_dlp.YoutubeDL(get_ydl_opts()) as ydl:
-            info = ydl.extract_info(fetch_url, download=False)
+        info = ydl_extract(get_fetch_urls(url), get_ydl_opts())
         mins = int(info.get('duration', 0) // 60)
         secs = int(info.get('duration', 0) % 60)
         return jsonify({
@@ -429,7 +440,6 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
     try:
         log('Downloading video from YouTube...', 5)
 
-        fetch_url = to_invidious_url(url)
         fmt = (
             f'bestvideo[height<={quality}]+bestaudio'
             f'/best[height<={quality}]'
@@ -442,9 +452,18 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             'outtmpl': video_tmpl,
             'merge_output_format': 'mp4',
         })
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(fetch_url, download=True)
+        fetch_urls = get_fetch_urls(url)
+        last_err = None
+        info = None
+        for fetch_url in fetch_urls:
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(fetch_url, download=True)
+                break
+            except Exception as e:
+                last_err = e
+        if info is None:
+            raise last_err
 
         video_path = None
         for f in os.listdir(job_dir):
