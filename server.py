@@ -464,14 +464,47 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
         title    = info.get('title', 'clip')
         log(f'Found "{title}" ({duration//60}:{duration%60:02d}).', 15)
 
-        # Step 2: calculate timestamps (evenly spaced — no full download needed)
-        margin     = max(int(duration * 0.05), 10)
-        safe_start = margin
-        safe_end   = max(duration - clip_len - margin, safe_start + clip_len)
-        safe_range = safe_end - safe_start
-        starts = [safe_start] if num_clips == 1 else [
-            safe_start + int(safe_range * i / (num_clips - 1)) for i in range(num_clips)
-        ]
+        # Step 2: AI moment detection — download audio only (much smaller than video)
+        starts = None
+        if ai_detect and num_clips > 1 and ASSEMBLYAI_API_KEY and duration <= 900:
+            log('Downloading audio for AI analysis...', 18)
+            audio_tmpl = os.path.join(job_dir, 'audio.%(ext)s')
+            audio_opts = get_ydl_opts({
+                'format': 'worstaudio/bestaudio[abr<=64]/bestaudio',
+                'outtmpl': audio_tmpl,
+                'socket_timeout': 60,
+                'retries': 2,
+            })
+            try:
+                with yt_dlp.YoutubeDL(audio_opts) as ydl:
+                    ydl.download([url])
+                audio_path = next(
+                    (os.path.join(job_dir, f) for f in os.listdir(job_dir) if f.startswith('audio.')),
+                    None
+                )
+                if audio_path:
+                    log('AI analyzing speech and emotion for viral moments...', 25)
+                    starts = _moments_assemblyai(audio_path, duration, num_clips, clip_len)
+                    if starts:
+                        log(f'AI found {len(starts)} viral moments: {", ".join(f"{s//60}:{s%60:02d}" for s in starts)}', 32)
+                    else:
+                        log('AI scan done — using optimized distribution...', 30)
+                    try:
+                        os.unlink(audio_path)
+                    except Exception:
+                        pass
+            except Exception as e:
+                log(f'Audio download skipped ({e}) — using distribution...', 25)
+
+        # Fallback: evenly spaced timestamps
+        if not starts:
+            margin     = max(int(duration * 0.05), 10)
+            safe_start = margin
+            safe_end   = max(duration - clip_len - margin, safe_start + clip_len)
+            safe_range = safe_end - safe_start
+            starts = [safe_start] if num_clips == 1 else [
+                safe_start + int(safe_range * i / (num_clips - 1)) for i in range(num_clips)
+            ]
 
         # Step 3: download only the specific sections — not the full video
         clips = []
