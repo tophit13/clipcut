@@ -14,4 +14,4 @@ COPY . .
 
 RUN mkdir -p clips
 
-CMD gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 300
+CMD sh -c "gunicorn server:app --bind 0.0.0.0:${PORT:-8080} --workers 1 --threads 4 --timeout 300"
