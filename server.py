@@ -456,12 +456,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
     try:
         log('Fetching video info...', 5)
 
-        fmt = (
-            f'bestvideo[height<={quality}]+bestaudio'
-            f'/best[height<={quality}]'
-            f'/bestvideo+bestaudio'
-            f'/best'
-        )
+        fmt = f'best[height<={quality}]/best[height<=720]/best'
         video_tmpl = os.path.join(job_dir, 'video.%(ext)s')
 
         # Step 1: get metadata via proxy (YouTube API is blocked on Render IPs)
