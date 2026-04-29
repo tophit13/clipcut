@@ -457,84 +457,72 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
         log('Fetching video info...', 5)
 
         fmt = f'best[height<={quality}]/best[height<=720]/best'
-        video_tmpl = os.path.join(job_dir, 'video.%(ext)s')
 
-        # Step 1: get metadata via proxy (YouTube API is blocked on Render IPs)
-        info = ydl_extract(get_fetch_urls(url), get_ydl_opts())
-
-        log('Downloading video from YouTube...', 10)
-
-        # Step 2: download via proxy (Render IPs are blocked by YouTube entirely)
-        dl_opts = get_ydl_opts({
-            'format': fmt,
-            'outtmpl': video_tmpl,
-            'merge_output_format': 'mp4',
-            'socket_timeout': 60,
-            'retries': 3,
-        })
-        with yt_dlp.YoutubeDL(dl_opts) as ydl:
-            ydl.download([url])
-
-        video_path = None
-        for f in os.listdir(job_dir):
-            if f.startswith('video.'):
-                video_path = os.path.join(job_dir, f)
-                break
-
-        if not video_path or not os.path.exists(video_path):
-            raise FileNotFoundError('Download failed — video file not found.')
-
+        # Step 1: get metadata via proxy
+        info     = ydl_extract(get_fetch_urls(url), get_ydl_opts())
         duration = int(info.get('duration', 0))
         title    = info.get('title', 'clip')
-        log(f'Downloaded "{title}" ({duration//60}:{duration%60:02d}).', 38)
+        log(f'Found "{title}" ({duration//60}:{duration%60:02d}).', 15)
 
-        starts = None
+        # Step 2: calculate timestamps (evenly spaced — no full download needed)
+        margin     = max(int(duration * 0.05), 10)
+        safe_start = margin
+        safe_end   = max(duration - clip_len - margin, safe_start + clip_len)
+        safe_range = safe_end - safe_start
+        starts = [safe_start] if num_clips == 1 else [
+            safe_start + int(safe_range * i / (num_clips - 1)) for i in range(num_clips)
+        ]
 
-        if ai_detect and num_clips > 1:
-            if ASSEMBLYAI_API_KEY:
-                log('AI analyzing speech and emotion for viral moments...', 40)
-            else:
-                log('Scanning audio energy for best moments...', 40)
-            starts = find_best_moments(video_path, duration, num_clips, clip_len)
-            if starts:
-                log(f'AI found {len(starts)} viral moments at: {", ".join(f"{s//60}:{s%60:02d}" for s in starts)}', 44)
-            else:
-                log('AI scan done — using optimized distribution...', 42)
-
-        if not starts:
-            # Spread clips avoiding first/last 5% of video
-            margin = max(int(duration * 0.05), 10)
-            safe_start = margin
-            safe_end   = max(duration - clip_len - margin, safe_start + clip_len)
-            safe_range = safe_end - safe_start
-            starts = [safe_start] if num_clips == 1 else [
-                safe_start + int(safe_range * i / (num_clips - 1)) for i in range(num_clips)
-            ]
-
+        # Step 3: download only the specific sections — not the full video
         clips = []
+        vf_filter = (
+            'crop=ih*9/16:ih' if ratio == '9:16' else
+            'crop=ih:ih'      if ratio == '1:1'  else
+            None
+        )
         for i, start in enumerate(starts):
-            pct       = 40 + int((i + 1) / num_clips * 55)
+            pct       = 20 + int((i + 1) / num_clips * 75)
             clip_name = f'clip_{i+1:02d}.mp4'
             clip_path = os.path.join(job_dir, clip_name)
-            log(f'Cutting clip {i+1}/{num_clips} (starts {start//60}:{start%60:02d})...', pct)
+            raw_tmpl  = os.path.join(job_dir, f'raw_{i+1:02d}.%(ext)s')
+            log(f'Downloading clip {i+1}/{num_clips} ({start//60}:{start%60:02d} – {(start+clip_len)//60}:{(start+clip_len)%60:02d})...', pct)
 
-            vf_filter = (
-                'crop=ih*9/16:ih' if ratio == '9:16' else
-                'crop=ih:ih'      if ratio == '1:1'  else
-                None
-            )
-            cmd = [
-                'ffmpeg', '-ss', str(start), '-i', video_path,
-                '-t', str(clip_len),
-            ]
+            dl_opts = get_ydl_opts({
+                'format': fmt,
+                'outtmpl': raw_tmpl,
+                'download_ranges': yt_dlp.utils.download_range_func(None, [(start, start + clip_len)]),
+                'force_keyframes_at_cuts': True,
+                'socket_timeout': 60,
+                'retries': 3,
+            })
+            try:
+                with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                    ydl.download([url])
+            except Exception as e:
+                log(f'Warning: clip {i+1} download failed — {e}', pct)
+                continue
+
+            # Find the downloaded raw file
+            raw_path = None
+            for f in os.listdir(job_dir):
+                if f.startswith(f'raw_{i+1:02d}.') and not f.endswith('.part'):
+                    raw_path = os.path.join(job_dir, f)
+                    break
+
+            if not raw_path or not os.path.exists(raw_path):
+                log(f'Warning: clip {i+1} file not found after download', pct)
+                continue
+
+            # Re-encode with ffmpeg (apply crop if needed, ensure mp4)
+            cmd = ['ffmpeg', '-i', raw_path, '-t', str(clip_len)]
             if vf_filter:
                 cmd += ['-vf', vf_filter]
-            cmd += [
-                '-c:v', 'libx264', '-c:a', 'aac',
-                '-movflags', '+faststart',
-                '-y', clip_path,
-            ]
-            result = subprocess.run(cmd, capture_output=True)
+            cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
+            subprocess.run(cmd, capture_output=True)
+            try:
+                os.unlink(raw_path)
+            except Exception:
+                pass
 
             if os.path.exists(clip_path) and os.path.getsize(clip_path) > 0:
                 size_mb = round(os.path.getsize(clip_path) / 1024 / 1024, 1)
@@ -546,8 +534,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
                     'size_mb':  size_mb,
                 })
             else:
-                stderr = result.stderr.decode(errors='ignore')[:300]
-                log(f'Warning: clip {i+1} failed — {stderr}', pct)
+                log(f'Warning: clip {i+1} encode failed', pct)
 
         if not clips:
             raise RuntimeError('No clips produced. Check server logs.')
