@@ -148,8 +148,9 @@ def get_ydl_opts(extra=None):
                 'player_client': ['ios', 'android', 'tv_embedded'],
             }
         },
+        'proxy': '',  # disable any system/env proxy by default
     }
-    # Optional proxy (set PROXY_URL=http://user:pass@host:port in env)
+    # Override proxy if user explicitly set PROXY_URL
     proxy = os.environ.get('PROXY_URL', '').strip()
     if proxy:
         opts['proxy'] = proxy
