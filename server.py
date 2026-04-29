@@ -439,7 +439,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
         job['progress'] = pct
 
     try:
-        log('Downloading video from YouTube...', 5)
+        log('Fetching video info...', 5)
 
         fmt = (
             f'bestvideo[height<={quality}]+bestaudio'
@@ -448,23 +448,23 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             f'/best'
         )
         video_tmpl = os.path.join(job_dir, 'video.%(ext)s')
-        ydl_opts = get_ydl_opts({
+
+        # Step 1: get metadata via proxy (YouTube API is blocked on Render IPs)
+        info = ydl_extract(get_fetch_urls(url), get_ydl_opts({'format': fmt}))
+
+        log('Downloading video from YouTube...', 10)
+
+        # Step 2: download the actual video file directly (no proxy — video CDN is not blocked)
+        dl_opts = get_ydl_opts({
             'format': fmt,
             'outtmpl': video_tmpl,
             'merge_output_format': 'mp4',
+            'proxy': '',  # bypass proxy for actual download — much faster
+            'socket_timeout': 60,
+            'retries': 3,
         })
-        fetch_urls = get_fetch_urls(url)
-        last_err = None
-        info = None
-        for fetch_url in fetch_urls:
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(fetch_url, download=True)
-                break
-            except Exception as e:
-                last_err = e
-        if info is None:
-            raise last_err
+        with yt_dlp.YoutubeDL(dl_opts) as ydl:
+            ydl.download([url])
 
         video_path = None
         for f in os.listdir(job_dir):
