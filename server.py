@@ -444,60 +444,48 @@ VIRAL_WORDS = {
 }
 
 def _moments_from_captions(info, duration, num_clips, clip_len):
-    """Use YouTube auto-captions to find viral moments — free, any length, any language."""
+    """Use youtube-transcript-api to get timestamped transcript and find viral moments."""
     try:
-        all_caps = {}
-        all_caps.update(info.get('automatic_captions', {}) or {})
-        all_caps.update(info.get('subtitles', {}) or {})
-        if not all_caps:
+        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+
+        vid = extract_video_id(info.get('webpage_url', '') or info.get('original_url', ''))
+        if not vid:
             return None
 
-        # Find a VTT URL in any language
-        vtt_url = None
-        for lang in all_caps:
-            for fmt in (all_caps[lang] or []):
-                if fmt.get('ext') == 'vtt':
-                    vtt_url = fmt['url']
-                    break
-            if vtt_url:
-                break
-        if not vtt_url:
+        # Try to get transcript in any available language
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(vid)
+            transcript = None
+            # Prefer manually created, then auto-generated
+            try:
+                transcript = transcript_list.find_manually_created_transcript(
+                    transcript_list._manually_created_transcripts.keys()
+                ).fetch()
+            except Exception:
+                pass
+            if not transcript:
+                try:
+                    transcript = transcript_list.find_generated_transcript(
+                        transcript_list._generated_transcripts.keys()
+                    ).fetch()
+                except Exception:
+                    pass
+            if not transcript:
+                return None
+        except (NoTranscriptFound, TranscriptsDisabled):
             return None
 
-        resp = req_lib.get(vtt_url, timeout=30)
-        if resp.status_code != 200:
-            return None
-
-        # Parse VTT timestamps and text
-        ts_re = re.compile(r'(\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{3})')
-        def ts2s(ts):
-            ts = ts.replace(',', '.')
-            h, m, s = ts.split(':')
-            return int(h) * 3600 + int(m) * 60 + float(s)
-
+        # Score each second by viral potential
         sec_scores = {}
-        lines = resp.text.split('\n')
-        i = 0
-        while i < len(lines):
-            m = ts_re.match(lines[i].strip())
-            if m:
-                seg_start = ts2s(m.group(1))
-                i += 1
-                text_parts = []
-                while i < len(lines) and lines[i].strip() and not ts_re.match(lines[i].strip()):
-                    clean = re.sub(r'<[^>]+>', '', lines[i]).strip()
-                    if clean:
-                        text_parts.append(clean)
-                    i += 1
-                text = ' '.join(text_parts)
-                if text:
-                    score = (text.count('!') * 5 + text.count('?') * 3
-                             + len(re.findall(r'\b\d+\b', text)) * 2
-                             + sum(8 for w in VIRAL_WORDS if w in text.lower()))
-                    sec = int(seg_start)
-                    sec_scores[sec] = sec_scores.get(sec, 0) + score
-            else:
-                i += 1
+        for seg in transcript:
+            start = seg.get('start', 0)
+            text  = seg.get('text', '')
+            score = (text.count('!') * 5
+                     + text.count('?') * 3
+                     + len(re.findall(r'\b\d+\b', text)) * 2
+                     + sum(8 for w in VIRAL_WORDS if w in text.lower()))
+            sec = int(start)
+            sec_scores[sec] = sec_scores.get(sec, 0) + score
 
         if not sec_scores:
             return None
@@ -506,7 +494,7 @@ def _moments_from_captions(info, duration, num_clips, clip_len):
         window_scores = {t: sum(sec_scores.get(s, 0) for s in range(t, t + clip_len))
                          for t in range(0, int(usable))}
 
-        min_gap = max(clip_len + 5, duration // max(num_clips * 2, 1))
+        min_gap  = max(clip_len + 5, duration // max(num_clips * 2, 1))
         candidates = sorted(window_scores.items(), key=lambda x: x[1], reverse=True)
         selected = []
         for t, score in candidates:
@@ -544,12 +532,8 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
 
         fmt = f'best[height<={quality}]/best[height<=720]/best'
 
-        # Step 1: get metadata via proxy (include subtitle URLs for caption analysis)
-        info     = ydl_extract(get_fetch_urls(url), get_ydl_opts({
-            'writesubtitles': False,
-            'writeautomaticsub': False,
-            'subtitleslangs': ['all'],
-        }))
+        # Step 1: get metadata via proxy
+        info     = ydl_extract(get_fetch_urls(url), get_ydl_opts())
         duration = int(info.get('duration', 0))
         title    = info.get('title', 'clip')
         log(f'Found "{title}" ({duration//60}:{duration%60:02d}).', 15)
