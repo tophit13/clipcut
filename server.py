@@ -435,6 +435,92 @@ def _moments_assemblyai(video_path, duration, num_clips, clip_len):
         return None
 
 
+VIRAL_WORDS = {
+    'secret','shocking','amazing','incredible','insane','unbelievable','never','always',
+    'million','billion','died','killed','banned','illegal','exposed','truth','lie',
+    'warning','dangerous','most','best','worst','first','last','only','ever',
+    'why','how','actually','literally','love','hate','fear','money','success',
+    'fail','win','lose','rich','poor','viral','crazy','huge','massive','broke',
+}
+
+def _moments_from_captions(info, duration, num_clips, clip_len):
+    """Use YouTube auto-captions to find viral moments — free, any length, any language."""
+    try:
+        all_caps = {}
+        all_caps.update(info.get('automatic_captions', {}) or {})
+        all_caps.update(info.get('subtitles', {}) or {})
+        if not all_caps:
+            return None
+
+        # Find a VTT URL in any language
+        vtt_url = None
+        for lang in all_caps:
+            for fmt in (all_caps[lang] or []):
+                if fmt.get('ext') == 'vtt':
+                    vtt_url = fmt['url']
+                    break
+            if vtt_url:
+                break
+        if not vtt_url:
+            return None
+
+        resp = req_lib.get(vtt_url, timeout=30)
+        if resp.status_code != 200:
+            return None
+
+        # Parse VTT timestamps and text
+        ts_re = re.compile(r'(\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{3})')
+        def ts2s(ts):
+            ts = ts.replace(',', '.')
+            h, m, s = ts.split(':')
+            return int(h) * 3600 + int(m) * 60 + float(s)
+
+        sec_scores = {}
+        lines = resp.text.split('\n')
+        i = 0
+        while i < len(lines):
+            m = ts_re.match(lines[i].strip())
+            if m:
+                seg_start = ts2s(m.group(1))
+                i += 1
+                text_parts = []
+                while i < len(lines) and lines[i].strip() and not ts_re.match(lines[i].strip()):
+                    clean = re.sub(r'<[^>]+>', '', lines[i]).strip()
+                    if clean:
+                        text_parts.append(clean)
+                    i += 1
+                text = ' '.join(text_parts)
+                if text:
+                    score = (text.count('!') * 5 + text.count('?') * 3
+                             + len(re.findall(r'\b\d+\b', text)) * 2
+                             + sum(8 for w in VIRAL_WORDS if w in text.lower()))
+                    sec = int(seg_start)
+                    sec_scores[sec] = sec_scores.get(sec, 0) + score
+            else:
+                i += 1
+
+        if not sec_scores:
+            return None
+
+        usable = max(duration - clip_len, 1)
+        window_scores = {t: sum(sec_scores.get(s, 0) for s in range(t, t + clip_len))
+                         for t in range(0, int(usable))}
+
+        min_gap = max(clip_len + 5, duration // max(num_clips * 2, 1))
+        candidates = sorted(window_scores.items(), key=lambda x: x[1], reverse=True)
+        selected = []
+        for t, score in candidates:
+            if score == 0:
+                break
+            if all(abs(t - s) >= min_gap for s in selected):
+                selected.append(t)
+            if len(selected) >= num_clips:
+                break
+        return sorted(selected) if len(selected) >= num_clips else None
+    except Exception:
+        return None
+
+
 def find_best_moments(video_path, duration, num_clips, clip_len):
     """AssemblyAI for short videos (≤15 min); fast local PCM for everything else."""
     if ASSEMBLYAI_API_KEY and duration <= 900:
@@ -464,37 +550,44 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
         title    = info.get('title', 'clip')
         log(f'Found "{title}" ({duration//60}:{duration%60:02d}).', 15)
 
-        # Step 2: AI moment detection — download audio only (much smaller than video)
+        # Step 2: AI moment detection
         starts = None
-        if ai_detect and num_clips > 1 and ASSEMBLYAI_API_KEY and duration <= 900:
-            log('Downloading audio for AI analysis...', 18)
-            audio_tmpl = os.path.join(job_dir, 'audio.%(ext)s')
-            audio_opts = get_ydl_opts({
-                'format': 'worstaudio/bestaudio[abr<=64]/bestaudio',
-                'outtmpl': audio_tmpl,
-                'socket_timeout': 60,
-                'retries': 2,
-            })
-            try:
-                with yt_dlp.YoutubeDL(audio_opts) as ydl:
-                    ydl.download([url])
-                audio_path = next(
-                    (os.path.join(job_dir, f) for f in os.listdir(job_dir) if f.startswith('audio.')),
-                    None
-                )
-                if audio_path:
-                    log('AI analyzing speech and emotion for viral moments...', 25)
-                    starts = _moments_assemblyai(audio_path, duration, num_clips, clip_len)
-                    if starts:
-                        log(f'AI found {len(starts)} viral moments: {", ".join(f"{s//60}:{s%60:02d}" for s in starts)}', 32)
-                    else:
-                        log('AI scan done — using optimized distribution...', 30)
+        if ai_detect and num_clips > 1:
+            # Try captions first — free, fast, works for ANY video length
+            log('Analyzing captions for viral moments...', 18)
+            starts = _moments_from_captions(info, duration, num_clips, clip_len)
+            if starts:
+                log(f'AI found {len(starts)} viral moments: {", ".join(f"{s//60}:{s%60:02d}" for s in starts)}', 30)
+            else:
+                # Fallback: AssemblyAI audio analysis (short videos only)
+                if ASSEMBLYAI_API_KEY and duration <= 900:
+                    log('Downloading audio for deep AI analysis...', 20)
+                    audio_tmpl = os.path.join(job_dir, 'audio.%(ext)s')
                     try:
-                        os.unlink(audio_path)
-                    except Exception:
-                        pass
-            except Exception as e:
-                log(f'Audio download skipped ({e}) — using distribution...', 25)
+                        with yt_dlp.YoutubeDL(get_ydl_opts({
+                            'format': 'worstaudio/bestaudio[abr<=64]/bestaudio',
+                            'outtmpl': audio_tmpl,
+                            'socket_timeout': 60,
+                            'retries': 2,
+                        })) as ydl:
+                            ydl.download([url])
+                        audio_path = next(
+                            (os.path.join(job_dir, f) for f in os.listdir(job_dir) if f.startswith('audio.')),
+                            None
+                        )
+                        if audio_path:
+                            log('AI analyzing speech and emotion...', 25)
+                            starts = _moments_assemblyai(audio_path, duration, num_clips, clip_len)
+                            if starts:
+                                log(f'AI found {len(starts)} moments: {", ".join(f"{s//60}:{s%60:02d}" for s in starts)}', 32)
+                            try:
+                                os.unlink(audio_path)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        log(f'Audio analysis skipped — {e}', 25)
+                if not starts:
+                    log('Using optimized distribution...', 25)
 
         # Fallback: evenly spaced timestamps
         if not starts:
