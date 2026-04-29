@@ -454,12 +454,11 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
 
         log('Downloading video from YouTube...', 10)
 
-        # Step 2: download the actual video file directly (no proxy — video CDN is not blocked)
+        # Step 2: download via proxy (Render IPs are blocked by YouTube entirely)
         dl_opts = get_ydl_opts({
             'format': fmt,
             'outtmpl': video_tmpl,
             'merge_output_format': 'mp4',
-            'proxy': '',  # bypass proxy for actual download — much faster
             'socket_timeout': 60,
             'retries': 3,
         })
