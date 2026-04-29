@@ -465,7 +465,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
         video_tmpl = os.path.join(job_dir, 'video.%(ext)s')
 
         # Step 1: get metadata via proxy (YouTube API is blocked on Render IPs)
-        info = ydl_extract(get_fetch_urls(url), get_ydl_opts({'format': fmt}))
+        info = ydl_extract(get_fetch_urls(url), get_ydl_opts())
 
         log('Downloading video from YouTube...', 10)
 
