@@ -14,5 +14,6 @@ COPY . .
 
 RUN mkdir -p clips
 
-ENV PORT=8080
-CMD ["/bin/sh", "-c", "exec gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 300"]
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+CMD ["/app/start.sh"]
