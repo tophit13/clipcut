@@ -544,8 +544,12 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
 
         fmt = f'best[height<={quality}]/best[height<=720]/best'
 
-        # Step 1: get metadata via proxy
-        info     = ydl_extract(get_fetch_urls(url), get_ydl_opts())
+        # Step 1: get metadata via proxy (include subtitle URLs for caption analysis)
+        info     = ydl_extract(get_fetch_urls(url), get_ydl_opts({
+            'writesubtitles': False,
+            'writeautomaticsub': False,
+            'subtitleslangs': ['all'],
+        }))
         duration = int(info.get('duration', 0))
         title    = info.get('title', 'clip')
         log(f'Found "{title}" ({duration//60}:{duration%60:02d}).', 15)
@@ -565,7 +569,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
                     audio_tmpl = os.path.join(job_dir, 'audio.%(ext)s')
                     try:
                         with yt_dlp.YoutubeDL(get_ydl_opts({
-                            'format': 'worstaudio/bestaudio[abr<=64]/bestaudio',
+                            'format': 'best[height<=144]/worst/best',
                             'outtmpl': audio_tmpl,
                             'socket_timeout': 60,
                             'retries': 2,
