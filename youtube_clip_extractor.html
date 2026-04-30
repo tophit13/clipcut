@@ -436,6 +436,22 @@ body::before{
       <input class="url-input" id="urlInput" type="text" placeholder="https://youtube.com/watch?v=..." />
       <button class="btn-analyze" id="analyzeBtn" onclick="analyzeURL()">Analyze →</button>
     </div>
+    <div id="cookieBar" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;font-size:12px;color:var(--muted)">
+      <span id="cookieStatus">Checking cookies...</span>
+      <button onclick="toggleCookiePanel()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 10px;color:var(--muted);cursor:pointer;font-size:11px">Cookie Setup</button>
+    </div>
+    <div id="cookiePanel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">
+        Clips failing? Paste your YouTube <code>cookies.txt</code> below to fix bot-detection errors.<br>
+        <strong>How:</strong> Install <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" style="color:var(--accent)">Get cookies.txt LOCALLY</a> → open youtube.com while signed in → click the extension → Export → copy &amp; paste here.
+      </div>
+      <textarea id="cookiePasteArea" rows="5" placeholder="# Netscape HTTP Cookie File&#10;.youtube.com TRUE / FALSE ..." style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);font-family:monospace;font-size:11px;resize:vertical"></textarea>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+        <button onclick="saveCookies()" style="background:var(--accent);color:#000;border:none;border-radius:6px;padding:6px 18px;font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif">Save Cookies</button>
+        <button onclick="clearCookies()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;color:var(--muted)">Clear</button>
+        <span id="cookieSaveStatus" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+    </div>
     <div class="or-row">
       <div class="or-line"></div><div class="or-text">OR UPLOAD</div><div class="or-line"></div>
     </div>
@@ -1002,6 +1018,53 @@ function setStep(n){
     if(el) el.className = 'step-line'+(i<n?' done':'');
   }
 }
+
+// --- Cookie Setup ---
+async function checkCookieStatus() {
+  try {
+    const r = await fetch('/api/cookie-status', { credentials: 'include' });
+    const d = await r.json();
+    const el = document.getElementById('cookieStatus');
+    if (d.active) {
+      el.innerHTML = '<span style="color:#4caf50">✓ Cookies active</span> (' + d.source + ')';
+    } else {
+      el.innerHTML = '<span style="color:var(--muted)">No cookies — clips may fail on some videos</span>';
+    }
+  } catch(e) {}
+}
+
+function toggleCookiePanel() {
+  const p = document.getElementById('cookiePanel');
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveCookies() {
+  const content = document.getElementById('cookiePasteArea').value.trim();
+  if (!content) { document.getElementById('cookieSaveStatus').textContent = 'Nothing to save.'; return; }
+  const blob = new Blob([content], { type: 'text/plain' });
+  const fd = new FormData();
+  fd.append('cookies', blob, 'cookies.txt');
+  try {
+    const r = await fetch('/api/upload-cookies', { method: 'POST', credentials: 'include', body: fd });
+    const d = await r.json();
+    if (d.ok) {
+      document.getElementById('cookieSaveStatus').innerHTML = '<span style="color:#4caf50">✓ Saved!</span>';
+      checkCookieStatus();
+      setTimeout(() => { document.getElementById('cookiePanel').style.display = 'none'; }, 1200);
+    } else {
+      document.getElementById('cookieSaveStatus').textContent = 'Error: ' + (d.error || 'unknown');
+    }
+  } catch(e) {
+    document.getElementById('cookieSaveStatus').textContent = 'Failed: ' + e;
+  }
+}
+
+async function clearCookies() {
+  document.getElementById('cookiePasteArea').value = '';
+  document.getElementById('cookieSaveStatus').textContent = 'Cleared (not yet saved).';
+}
+
+document.addEventListener('DOMContentLoaded', checkCookieStatus);
 
 function showToast(msg, isError=false){
   const t = document.getElementById('toast');

@@ -329,10 +329,23 @@ def _get_cdnurls_piped(video_id):
 def _invidious_clip(vid, quality, start, duration, vf_filter, clip_path,
                     preferred_inst='', direct_stream_url='',
                     adaptive_video_url='', adaptive_audio_url='',
-                    piped_video_url='', piped_audio_url=''):
+                    piped_video_url='', piped_audio_url='',
+                    yt_stream_v='', yt_stream_a=''):
     """Download one clip section via ffmpeg. Tries strategies in order.
     Returns (success: bool, working_inst: str)."""
     import sys
+
+    # Strategy 0: yt-dlp CDN URL via cookies/OAuth — most reliable, bypasses bot detection
+    if yt_stream_v and yt_stream_a:
+        print(f'[clip] S0 ytdlp adaptive v={yt_stream_v[:60]}', file=sys.stderr)
+        if _ffmpeg_clip_adaptive(yt_stream_v, yt_stream_a, start, duration, vf_filter, clip_path):
+            return True, preferred_inst
+        print('[clip] S0 adaptive failed', file=sys.stderr)
+    elif yt_stream_v:
+        print(f'[clip] S0 ytdlp combined url={yt_stream_v[:60]}', file=sys.stderr)
+        if _ffmpeg_clip(yt_stream_v, start, duration, vf_filter, clip_path):
+            return True, preferred_inst
+        print('[clip] S0 combined failed', file=sys.stderr)
 
     # Strategy 1: Combined stream from Invidious API (audio+video in one file)
     if direct_stream_url:
@@ -472,6 +485,30 @@ def get_ydl_opts(extra=None, sid=None):
         opts.update(extra)
     return opts
 
+def _get_stream_url_ytdlp(url, quality, sid):
+    """Use yt-dlp with cookies/OAuth to get a direct CDN stream URL for ffmpeg.
+    Returns (video_url, audio_url). audio_url is '' for combined streams."""
+    import sys
+    try:
+        fmt = (f'best[height<={quality}][ext=mp4]/'
+               f'bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/'
+               f'best[height<={quality}]/best')
+        opts = get_ydl_opts({'format': fmt, 'quiet': True}, sid=sid)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                return '', ''
+            if info.get('url'):
+                return info['url'], ''
+            fmts = info.get('requested_formats') or []
+            v = next((f.get('url', '') for f in fmts if f.get('vcodec', 'none') != 'none'), '')
+            a = next((f.get('url', '') for f in fmts
+                      if f.get('acodec', 'none') != 'none' and f.get('vcodec', 'none') == 'none'), '')
+            return v, a
+    except Exception as e:
+        print(f'[ytdlp-stream] {e}', file=sys.stderr)
+        return '', ''
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -512,6 +549,17 @@ def api_me():
         'subtitles': limits['subtitles'],
         'api_key': user['api_key'] if plan == 'business' else None,
     })
+
+@app.route('/api/cookie-status')
+def api_cookie_status():
+    sid = session.get('sid', '')
+    path = os.path.join(CLIPS_DIR, f'cookies_{sid}.txt') if sid else ''
+    has_session = bool(path and os.path.exists(path))
+    has_env     = bool(os.environ.get('YOUTUBE_COOKIES', '').strip())
+    has_oauth   = bool(YOUTUBE_OAUTH_TOKEN)
+    active = has_session or has_env or has_oauth
+    source = 'session' if has_session else ('env' if has_env else ('oauth' if has_oauth else 'none'))
+    return jsonify({'active': active, 'source': source})
 
 @app.route('/api/upload-cookies', methods=['POST'])
 def api_upload_cookies():
@@ -677,8 +725,19 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
         )
 
         log('Fetching stream URLs...', 19)
+        yt_stream_v, yt_stream_a = '', ''
+        has_cookies = bool(
+            os.environ.get('YOUTUBE_COOKIES', '').strip() or
+            YOUTUBE_OAUTH_TOKEN or
+            (sid and os.path.exists(os.path.join(CLIPS_DIR, f'cookies_{sid}.txt')))
+        )
+        if has_cookies:
+            log('Getting stream URL via yt-dlp (cookies/OAuth)...', 19)
+            yt_stream_v, yt_stream_a = _get_stream_url_ytdlp(url, quality, sid)
         piped_v, piped_a = _get_cdnurls_piped(vid) if vid else ('', '')
-        if adaptive_v:
+        if yt_stream_v:
+            log('Got stream URL via yt-dlp.', 20)
+        elif adaptive_v:
             log('Got adaptive CDN URLs via Invidious.', 20)
         elif piped_v:
             log('Got CDN URLs via Piped API.', 20)
@@ -696,7 +755,8 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
 
             if vid:
                 ok, working_inst = _invidious_clip(vid, quality, start, duration, vf_filter, clip_path,
-                                                   working_inst, direct_url, adaptive_v, adaptive_a, piped_v, piped_a)
+                                                   working_inst, direct_url, adaptive_v, adaptive_a, piped_v, piped_a,
+                                                   yt_stream_v, yt_stream_a)
                 if not ok:
                     log(f'Warning: clip {i+1} — all Invidious instances failed, skipping', pct)
                     continue
@@ -1042,8 +1102,20 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
         adaptive_a    = info.get('_adaptive_audio_url', '')
 
         log('Fetching stream URLs...', 19)
+        # Strategy 0: yt-dlp with cookies/OAuth (most reliable — bypasses bot detection)
+        yt_stream_v, yt_stream_a = '', ''
+        has_cookies = bool(
+            os.environ.get('YOUTUBE_COOKIES', '').strip() or
+            YOUTUBE_OAUTH_TOKEN or
+            (sid and os.path.exists(os.path.join(CLIPS_DIR, f'cookies_{sid}.txt')))
+        )
+        if has_cookies:
+            log('Getting stream URL via yt-dlp (cookies/OAuth)...', 19)
+            yt_stream_v, yt_stream_a = _get_stream_url_ytdlp(url, quality, sid)
         piped_v, piped_a = _get_cdnurls_piped(vid) if vid else ('', '')
-        if adaptive_v:
+        if yt_stream_v:
+            log('Got stream URL via yt-dlp.', 20)
+        elif adaptive_v:
             log('Got adaptive CDN URLs via Invidious.', 20)
         elif piped_v:
             log('Got CDN URLs via Piped API.', 20)
@@ -1056,7 +1128,8 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
 
             if vid:
                 ok, working_inst = _invidious_clip(vid, quality, start, clip_len, vf_filter, clip_path,
-                                                   working_inst, direct_url, adaptive_v, adaptive_a, piped_v, piped_a)
+                                                   working_inst, direct_url, adaptive_v, adaptive_a, piped_v, piped_a,
+                                                   yt_stream_v, yt_stream_a)
                 if not ok:
                     log(f'Warning: clip {i+1} — all Invidious instances failed, skipping', pct)
                     continue
