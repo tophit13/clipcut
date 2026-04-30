@@ -164,7 +164,6 @@ def _get_info_invidious(video_id):
 
 def _invidious_stream_url(inst, video_id, quality):
     """Return an Invidious /latest_version stream URL for ffmpeg to consume directly."""
-    # itag 22 = 720p MP4 (combined), 18 = 360p MP4 (combined), 37 = 1080p MP4 (rare)
     itag_by_quality = {2160: 37, 1440: 37, 1080: 37, 720: 22, 480: 18, 360: 18}
     primary = itag_by_quality.get(int(quality), 22)
     for itag in [primary, 22, 18]:
@@ -172,10 +171,41 @@ def _invidious_stream_url(inst, video_id, quality):
         try:
             r = req_lib.head(url, timeout=10, allow_redirects=True)
             if r.status_code == 200:
-                return r.url  # follow redirects to get the actual stream URL
+                return r.url
         except Exception:
             pass
-    return f'{inst}/latest_version?id={video_id}&itag=22'  # best-effort fallback
+    return f'{inst}/latest_version?id={video_id}&itag=22'
+
+def _ffmpeg_clip(stream_url, start, duration, vf_filter, clip_path):
+    """Run ffmpeg to cut a clip from a stream URL. Returns True on success."""
+    cmd = ['ffmpeg', '-ss', str(start), '-i', stream_url, '-t', str(duration)]
+    if vf_filter:
+        cmd += ['-vf', vf_filter]
+    cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
+    try:
+        res = subprocess.run(cmd, capture_output=True, timeout=300)
+        return res.returncode == 0 and os.path.exists(clip_path) and os.path.getsize(clip_path) > 0
+    except subprocess.TimeoutExpired:
+        return False
+
+def _invidious_clip(vid, quality, start, duration, vf_filter, clip_path, preferred_inst=''):
+    """Try every Invidious instance to download one clip section via ffmpeg.
+    Returns (success: bool, working_inst: str)."""
+    itag = 37 if quality >= 1080 else (22 if quality >= 720 else 18)
+    instances = list(INVIDIOUS)
+    if preferred_inst and preferred_inst in instances:
+        instances.remove(preferred_inst)
+        instances.insert(0, preferred_inst)
+    for inst in instances:
+        stream_url = f'{inst}/latest_version?id={vid}&itag={itag}'
+        if _ffmpeg_clip(stream_url, start, duration, vf_filter, clip_path):
+            return True, inst
+        # Try lower quality on same instance before moving on
+        if itag != 22:
+            stream_url = f'{inst}/latest_version?id={vid}&itag=22'
+            if _ffmpeg_clip(stream_url, start, duration, vf_filter, clip_path):
+                return True, inst
+    return False, ''
 
 def ydl_extract(urls, opts):
     """Try each URL in sequence; return info dict from first that works."""
@@ -476,11 +506,9 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
             'crop=ih:ih'      if ratio == '1:1'  else
             None
         )
-        fmt = f'best[height<={quality}]/best[height<=720]/best'
 
-        stream_url = _invidious_stream_url(inv_inst, vid, quality) if inv_inst and vid else ''
-        if stream_url:
-            log('Using Invidious stream (no bot detection)...', 19)
+        log('Connecting to stream (no bot detection)...', 19)
+        working_inst = inv_inst  # start with the instance that served metadata
 
         result_clips = []
         for i, clip in enumerate(clips):
@@ -492,52 +520,14 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
             clip_path = os.path.join(job_dir, clip_name)
             log(f'Encoding clip {i+1}/{len(clips)} ({start//60}:{start%60:02d} – {end//60}:{end%60:02d})...', pct)
 
-            if stream_url:
-                cmd = ['ffmpeg', '-ss', str(start), '-i', stream_url, '-t', str(duration)]
-                if vf_filter:
-                    cmd += ['-vf', vf_filter]
-                cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
-                res = subprocess.run(cmd, capture_output=True, timeout=300)
-                if res.returncode != 0:
-                    log(f'Warning: clip {i+1} ffmpeg error: {res.stderr.decode(errors="replace")[-300:]}', pct)
+            if vid:
+                ok, working_inst = _invidious_clip(vid, quality, start, duration, vf_filter, clip_path, working_inst)
+                if not ok:
+                    log(f'Warning: clip {i+1} — all Invidious instances failed, skipping', pct)
                     continue
             else:
-                raw_tmpl = os.path.join(job_dir, f'raw_{i+1:02d}.%(ext)s')
-                dl_opts  = get_ydl_opts({
-                    'format': fmt,
-                    'outtmpl': raw_tmpl,
-                    'download_ranges': yt_dlp.utils.download_range_func(None, [(start, end)]),
-                    'force_keyframes_at_cuts': True,
-                    'socket_timeout': 60,
-                    'retries': 3,
-                }, sid=sid)
-                try:
-                    with yt_dlp.YoutubeDL(dl_opts) as ydl:
-                        ydl.download([dl_url])
-                except Exception as e:
-                    log(f'Warning: clip {i+1} download failed — {e}', pct)
-                    continue
-
-                raw_path = None
-                for f in os.listdir(job_dir):
-                    if f.startswith(f'raw_{i+1:02d}.') and not f.endswith('.part'):
-                        raw_path = os.path.join(job_dir, f)
-                        break
-                if not raw_path:
-                    log(f'Warning: clip {i+1} file not found', pct)
-                    continue
-
-                cmd = ['ffmpeg', '-i', raw_path, '-t', str(duration)]
-                if vf_filter:
-                    cmd += ['-vf', vf_filter]
-                cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
-                res = subprocess.run(cmd, capture_output=True)
-                if res.returncode != 0:
-                    log(f'Warning: ffmpeg failed for clip {i+1}: {res.stderr.decode(errors="replace")[-300:]}', pct)
-                try:
-                    os.unlink(raw_path)
-                except Exception:
-                    pass
+                log(f'Warning: clip {i+1} — no video ID, skipping', pct)
+                continue
 
             if os.path.exists(clip_path) and os.path.getsize(clip_path) > 0:
                 size_mb = round(os.path.getsize(clip_path) / 1024 / 1024, 1)
@@ -863,7 +853,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
                 safe_start + int(safe_range * i / (num_clips - 1)) for i in range(num_clips)
             ]
 
-        # Step 3: download only the specific sections — not the full video
+        # Step 3: download the specific sections via Invidious → ffmpeg (no bot detection)
         clips = []
         vf_filter = (
             'crop=ih*9/16:ih' if ratio == '9:16' else
@@ -871,11 +861,8 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             None
         )
 
-        # Prefer Invidious stream URL (bypasses YouTube bot detection entirely)
-        inv_inst   = info.get('_inv_inst', '')
-        stream_url = _invidious_stream_url(inv_inst, vid, quality) if inv_inst and vid else ''
-        if stream_url:
-            log('Using Invidious stream (no bot detection)...', 19)
+        log('Connecting to stream (no bot detection)...', 19)
+        working_inst = info.get('_inv_inst', '')  # start with instance that served metadata
 
         for i, start in enumerate(starts):
             pct       = 20 + int((i + 1) / num_clips * 75)
@@ -883,55 +870,14 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             clip_path = os.path.join(job_dir, clip_name)
             log(f'Downloading clip {i+1}/{num_clips} ({start//60}:{start%60:02d} – {(start+clip_len)//60}:{(start+clip_len)%60:02d})...', pct)
 
-            if stream_url:
-                # Download section directly via ffmpeg from Invidious stream
-                cmd = ['ffmpeg', '-ss', str(start), '-i', stream_url, '-t', str(clip_len)]
-                if vf_filter:
-                    cmd += ['-vf', vf_filter]
-                cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
-                result = subprocess.run(cmd, capture_output=True, timeout=300)
-                if result.returncode != 0:
-                    log(f'Warning: clip {i+1} ffmpeg error: {result.stderr.decode(errors="replace")[-300:]}', pct)
+            if vid:
+                ok, working_inst = _invidious_clip(vid, quality, start, clip_len, vf_filter, clip_path, working_inst)
+                if not ok:
+                    log(f'Warning: clip {i+1} — all Invidious instances failed, skipping', pct)
                     continue
             else:
-                # Fallback: yt-dlp section download
-                raw_tmpl = os.path.join(job_dir, f'raw_{i+1:02d}.%(ext)s')
-                dl_opts  = get_ydl_opts({
-                    'format': fmt,
-                    'outtmpl': raw_tmpl,
-                    'download_ranges': yt_dlp.utils.download_range_func(None, [(start, start + clip_len)]),
-                    'force_keyframes_at_cuts': True,
-                    'socket_timeout': 60,
-                    'retries': 3,
-                }, sid=sid)
-                try:
-                    with yt_dlp.YoutubeDL(dl_opts) as ydl:
-                        ydl.download([dl_url])
-                except Exception as e:
-                    log(f'Warning: clip {i+1} download failed — {e}', pct)
-                    continue
-
-                raw_path = None
-                for f in os.listdir(job_dir):
-                    if f.startswith(f'raw_{i+1:02d}.') and not f.endswith('.part'):
-                        raw_path = os.path.join(job_dir, f)
-                        break
-
-                if not raw_path or not os.path.exists(raw_path):
-                    log(f'Warning: clip {i+1} file not found after download', pct)
-                    continue
-
-                cmd = ['ffmpeg', '-i', raw_path, '-t', str(clip_len)]
-                if vf_filter:
-                    cmd += ['-vf', vf_filter]
-                cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
-                result = subprocess.run(cmd, capture_output=True)
-                if result.returncode != 0:
-                    log(f'Warning: ffmpeg failed for clip {i+1}: {result.stderr.decode(errors="replace")[-300:]}', pct)
-                try:
-                    os.unlink(raw_path)
-                except Exception:
-                    pass
+                log(f'Warning: clip {i+1} — no video ID, skipping', pct)
+                continue
 
             if os.path.exists(clip_path) and os.path.getsize(clip_path) > 0:
                 size_mb = round(os.path.getsize(clip_path) / 1024 / 1024, 1)
