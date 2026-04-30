@@ -318,6 +318,43 @@ body::before{
 }
 .spin{display:inline-block;width:16px;height:16px;border:2px solid #000;border-top-color:transparent;border-radius:50%;animation:spin 0.7s linear infinite;vertical-align:middle;margin-right:8px}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* tab switcher */
+.tab-bar{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:4px;margin-bottom:20px;display:flex;gap:4px}
+.tab-btn{flex:1;background:none;border:none;border-radius:7px;padding:10px 16px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;color:var(--muted2);cursor:pointer;transition:all 0.15s}
+.tab-btn.active{background:var(--accent);color:#000}
+.tab-btn:hover:not(.active){color:var(--text)}
+
+/* timeline */
+.tl-section{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:20px}
+.tl-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.tl-head-label{font-size:11px;font-family:'Space Mono',monospace;color:var(--muted);letter-spacing:1px;text-transform:uppercase}
+.tl-head-count{font-size:12px;font-family:'Space Mono',monospace;color:var(--accent);font-weight:700}
+.tl-wrap{position:relative;margin-bottom:16px}
+.tl-track{position:relative;height:52px;background:var(--surface2);border-radius:6px;cursor:crosshair;overflow:hidden;border:1px solid var(--border);transition:border-color 0.15s}
+.tl-track:hover{border-color:var(--muted)}
+.tl-bg-stripe{position:absolute;inset:0;background:repeating-linear-gradient(90deg,transparent,transparent 49px,rgba(255,255,255,0.03) 50px)}
+.tl-selection{position:absolute;top:0;height:100%;background:rgba(232,255,71,0.2);border:2px solid var(--accent);border-radius:3px;pointer-events:none;cursor:default}
+.tl-sel-label{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:9px;font-family:'Space Mono',monospace;color:var(--accent);white-space:nowrap;font-weight:700}
+.tl-drag-overlay{position:absolute;top:0;height:100%;background:rgba(232,255,71,0.12);border:2px dashed var(--accent);border-radius:3px;pointer-events:none;display:none}
+.tl-markers{position:absolute;inset:0;pointer-events:none}
+.tl-marker{position:absolute;top:0;height:100%;width:1px;background:rgba(255,255,255,0.07)}
+.tl-marker-lbl{position:absolute;top:3px;font-size:8px;font-family:'Space Mono',monospace;color:var(--muted);transform:translateX(-50%)}
+.tl-tip{position:absolute;bottom:calc(100% + 6px);transform:translateX(-50%);background:#1e1e1e;border:1px solid var(--border);color:var(--text);font-size:10px;font-family:'Space Mono',monospace;padding:3px 7px;border-radius:4px;white-space:nowrap;pointer-events:none;display:none;z-index:10}
+.tl-tip::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:4px solid transparent;border-top-color:#1e1e1e}
+.tl-hint{font-size:11px;color:var(--muted);font-family:'Space Mono',monospace;text-align:center;margin-top:8px}
+
+/* manual clip rows */
+.mc-list-title{font-size:11px;font-family:'Space Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px}
+.mc-row{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--surface2);border-radius:6px;margin-bottom:6px;border:1px solid var(--border);animation:fadeUp 0.2s ease both}
+.mc-num{font-family:'Bebas Neue',sans-serif;font-size:18px;color:var(--accent);min-width:24px;line-height:1}
+.mc-time{flex:1;font-size:12px;font-family:'Space Mono',monospace;color:var(--text)}
+.mc-dur{font-size:11px;color:var(--muted2);font-family:'Space Mono',monospace;margin-right:4px}
+.mc-del{background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px;line-height:1;padding:2px 4px;border-radius:3px;transition:color 0.15s}
+.mc-del:hover{color:var(--accent2)}
+
+/* manual settings row */
+.manual-settings{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
 </style>
 </head>
 <body>
@@ -406,6 +443,12 @@ body::before{
     </div>
   </div>
 
+  <!-- tab bar — shown after video loaded -->
+  <div class="tab-bar" id="tabBar" style="display:none">
+    <button class="tab-btn active" id="tabAuto" onclick="switchTab('auto')">⚡ Auto Clips</button>
+    <button class="tab-btn" id="tabManual" onclick="switchTab('manual')">✂️ Manual Timeline</button>
+  </div>
+
   <div class="config-section" id="configSection">
     <div class="config-title">Clip Settings</div>
     <div class="config-grid" style="margin-bottom:16px">
@@ -462,6 +505,50 @@ body::before{
   <button class="btn-generate" id="generateBtn" onclick="generateClips()">
     ✂️ Generate Clips
   </button>
+
+  <!-- manual timeline section -->
+  <div id="manualSection" style="display:none">
+    <div class="tl-section">
+      <div class="tl-head">
+        <span class="tl-head-label">Timeline — drag to select</span>
+        <span class="tl-head-count" id="tlCount">0 clips selected</span>
+      </div>
+      <div class="tl-wrap">
+        <div class="tl-track" id="tlTrack">
+          <div class="tl-bg-stripe"></div>
+          <div class="tl-markers" id="tlMarkers"></div>
+          <div id="tlSelections"></div>
+          <div class="tl-drag-overlay" id="tlDrag"></div>
+        </div>
+        <div class="tl-tip" id="tlTip"></div>
+        <div class="tl-hint">Click and drag to mark a clip segment · Click a clip to remove it</div>
+      </div>
+      <div id="mcList"></div>
+    </div>
+
+    <div class="manual-settings">
+      <div class="config-item">
+        <label>Format</label>
+        <select id="manualFormat">
+          <option value="16:9" selected>16:9 — YouTube / landscape</option>
+          <option value="9:16">9:16 — Reels / TikTok</option>
+          <option value="1:1">1:1 — Square / Instagram</option>
+        </select>
+      </div>
+      <div class="config-item">
+        <label>Quality</label>
+        <select id="manualQuality">
+          <option value="720" selected>720p</option>
+          <option value="1080">1080p</option>
+          <option value="2160">4K</option>
+        </select>
+      </div>
+    </div>
+
+    <button class="btn-generate" id="manualGenerateBtn" onclick="generateManualClips()" style="display:none">
+      ✂️ Generate Selected Clips
+    </button>
+  </div>
 
   <div class="progress-section" id="progressSection">
     <div class="progress-header">
@@ -563,6 +650,14 @@ let userMe      = null;
 let paddleReady = false;
 let paddlePrices = {};
 let paddleSessionId = '';
+
+// manual timeline state
+let manualClips   = [];   // [{start, end}, ...]
+let tlDragging    = false;
+let tlDragStartX  = 0;
+let tlDragStartT  = 0;
+let tlVideoDur    = 0;
+let activeTab     = 'auto';
 
 // ---------------------------------------------------------------------------
 // Init
@@ -710,7 +805,7 @@ async function analyzeURL() {
       throw new Error(data.error);
     }
     document.getElementById('cookieBanner').style.display = 'none';
-    videoData = {url, title: data.title, dur: data.duration_str, thumbnail: data.thumbnail};
+    videoData = {url, title: data.title, dur: data.duration_str, duration: data.duration, thumbnail: data.thumbnail};
     showVideoPreview(videoData);
   } catch(e) {
     showToast('Error: ' + e.message, true);
@@ -782,16 +877,28 @@ async function pollStatus() {
     if (data.status === 'done') {
       clearInterval(pollTimer);
       showClips(data.clips);
-      loadUser(); // refresh usage meter
-      const btn = document.getElementById('generateBtn');
-      btn.innerHTML = '✂️ Re-generate Clips';
-      btn.disabled  = false;
+      loadUser();
+      if (activeTab === 'manual') {
+        const btn = document.getElementById('manualGenerateBtn');
+        btn.innerHTML = '✂️ Generate Selected Clips';
+        btn.disabled  = false;
+      } else {
+        const btn = document.getElementById('generateBtn');
+        btn.innerHTML = '✂️ Re-generate Clips';
+        btn.disabled  = false;
+      }
     } else if (data.status === 'error') {
       clearInterval(pollTimer);
       showToast('Error: ' + (data.error || 'Processing failed'), true);
-      const btn = document.getElementById('generateBtn');
-      btn.innerHTML = '✂️ Generate Clips';
-      btn.disabled  = false;
+      if (activeTab === 'manual') {
+        const btn = document.getElementById('manualGenerateBtn');
+        btn.innerHTML = '✂️ Generate Selected Clips';
+        btn.disabled  = false;
+      } else {
+        const btn = document.getElementById('generateBtn');
+        btn.innerHTML = '✂️ Generate Clips';
+        btn.disabled  = false;
+      }
     }
   } catch(e) { /* ignore transient poll errors */ }
 }
@@ -806,11 +913,13 @@ function showVideoPreview(v) {
   const thumbEl = document.getElementById('videoThumb');
   thumbEl.innerHTML = v.thumbnail ? `<img src="${v.thumbnail}" alt="">` : '🎬';
   document.getElementById('videoPreview').style.display  = 'block';
+  document.getElementById('tabBar').style.display        = 'flex';
   document.getElementById('configSection').style.display = 'block';
   document.getElementById('generateBtn').style.display   = 'block';
+  buildTimeline(v.duration || 0);
   setStep(2);
   videoLoaded = true;
-  showToast('Video found — configure your clips below');
+  showToast('Video found — configure clips below, or use Manual Timeline');
 }
 
 function showClips(clips) {
@@ -872,6 +981,223 @@ function showToast(msg, isError=false){
   t.className   = 'toast' + (isError ? ' error' : '');
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+// ---------------------------------------------------------------------------
+// Tab switcher
+// ---------------------------------------------------------------------------
+
+function switchTab(tab) {
+  activeTab = tab;
+  document.getElementById('tabAuto').classList.toggle('active', tab === 'auto');
+  document.getElementById('tabManual').classList.toggle('active', tab === 'manual');
+  document.getElementById('configSection').style.display   = tab === 'auto' ? 'block' : 'none';
+  document.getElementById('generateBtn').style.display     = tab === 'auto' ? 'block' : 'none';
+  document.getElementById('manualSection').style.display   = tab === 'manual' ? 'block' : 'none';
+}
+
+// ---------------------------------------------------------------------------
+// Manual timeline
+// ---------------------------------------------------------------------------
+
+function fmtTime(s) {
+  s = Math.round(s);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${m<10?'0'+m:m}:${sec<10?'0'+sec:sec}`;
+  return `${m}:${sec<10?'0'+sec:sec}`;
+}
+
+function buildTimeline(dur) {
+  tlVideoDur = dur;
+  manualClips = [];
+  renderTimeline();
+
+  const track = document.getElementById('tlTrack');
+
+  // Generate time markers
+  const markers = document.getElementById('tlMarkers');
+  markers.innerHTML = '';
+  const step = dur <= 120 ? 15 : dur <= 600 ? 60 : dur <= 3600 ? 300 : 600;
+  for (let t = step; t < dur; t += step) {
+    const pct = (t / dur) * 100;
+    const m = document.createElement('div');
+    m.className = 'tl-marker';
+    m.style.left = pct + '%';
+    const lbl = document.createElement('div');
+    lbl.className = 'tl-marker-lbl';
+    lbl.style.left = pct + '%';
+    lbl.textContent = fmtTime(t);
+    markers.appendChild(m);
+    markers.appendChild(lbl);
+  }
+
+  // Mouse events
+  track.onmousedown = tlMouseDown;
+  track.onmousemove = tlMouseMove;
+  track.onmouseup   = tlMouseUp;
+  track.onmouseleave = tlMouseLeave;
+}
+
+function tlPosToTime(e) {
+  const rect = document.getElementById('tlTrack').getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  return ratio * tlVideoDur;
+}
+
+function tlMouseDown(e) {
+  if (!tlVideoDur) return;
+  tlDragging   = true;
+  tlDragStartT = tlPosToTime(e);
+  tlDragStartX = e.clientX;
+  const drag = document.getElementById('tlDrag');
+  drag.style.display = 'block';
+  drag.style.left  = ((tlDragStartT / tlVideoDur) * 100) + '%';
+  drag.style.width = '0%';
+  e.preventDefault();
+}
+
+function tlMouseMove(e) {
+  const tip  = document.getElementById('tlTip');
+  const rect = document.getElementById('tlTrack').getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  const curT  = ratio * tlVideoDur;
+
+  tip.style.display = 'block';
+  tip.style.left = (ratio * 100) + '%';
+  tip.textContent = fmtTime(curT);
+
+  if (tlDragging) {
+    const startPct = (tlDragStartT / tlVideoDur) * 100;
+    const endPct   = ratio * 100;
+    const left  = Math.min(startPct, endPct);
+    const width = Math.abs(endPct - startPct);
+    const drag  = document.getElementById('tlDrag');
+    drag.style.left  = left + '%';
+    drag.style.width = width + '%';
+  }
+}
+
+function tlMouseUp(e) {
+  if (!tlDragging) return;
+  tlDragging = false;
+  document.getElementById('tlDrag').style.display = 'none';
+  document.getElementById('tlTip').style.display  = 'none';
+
+  const endT = tlPosToTime(e);
+  const s = Math.min(tlDragStartT, endT);
+  const en = Math.max(tlDragStartT, endT);
+
+  if (en - s >= 3) {
+    manualClips.push({start: Math.round(s), end: Math.round(en)});
+    renderTimeline();
+  }
+}
+
+function tlMouseLeave(e) {
+  document.getElementById('tlTip').style.display = 'none';
+  if (tlDragging) tlMouseUp(e);
+}
+
+function removeManualClip(idx) {
+  manualClips.splice(idx, 1);
+  renderTimeline();
+}
+
+function renderTimeline() {
+  const sels  = document.getElementById('tlSelections');
+  const list  = document.getElementById('mcList');
+  const count = document.getElementById('tlCount');
+  const btn   = document.getElementById('manualGenerateBtn');
+  const n     = manualClips.length;
+
+  count.textContent = n === 0 ? '0 clips selected' : `${n} clip${n>1?'s':''} selected`;
+  btn.style.display = n > 0 ? 'block' : 'none';
+
+  // timeline selections
+  sels.innerHTML = '';
+  manualClips.forEach((c, i) => {
+    const leftPct  = (c.start / tlVideoDur) * 100;
+    const widthPct = ((c.end - c.start) / tlVideoDur) * 100;
+    const el = document.createElement('div');
+    el.className = 'tl-selection';
+    el.style.left  = leftPct + '%';
+    el.style.width = widthPct + '%';
+    el.title = `Clip ${i+1}: ${fmtTime(c.start)} – ${fmtTime(c.end)} · Click to remove`;
+    el.onclick = () => removeManualClip(i);
+    el.style.cursor = 'pointer';
+    const lbl = document.createElement('div');
+    lbl.className = 'tl-sel-label';
+    lbl.textContent = `#${i+1}`;
+    el.appendChild(lbl);
+    sels.appendChild(el);
+  });
+
+  // clip list
+  if (n === 0) {
+    list.innerHTML = '';
+    return;
+  }
+  let html = `<div class="mc-list-title">Selected clips</div>`;
+  manualClips.forEach((c, i) => {
+    const dur = c.end - c.start;
+    html += `<div class="mc-row">
+      <div class="mc-num">${String(i+1).padStart(2,'0')}</div>
+      <div class="mc-time">${fmtTime(c.start)} → ${fmtTime(c.end)}</div>
+      <div class="mc-dur">${dur}s</div>
+      <button class="mc-del" onclick="removeManualClip(${i})" title="Remove">×</button>
+    </div>`;
+  });
+  list.innerHTML = html;
+}
+
+async function generateManualClips() {
+  if (!videoLoaded || manualClips.length === 0) {
+    showToast('Select at least one clip on the timeline first');
+    return;
+  }
+
+  const btn = document.getElementById('manualGenerateBtn');
+  btn.innerHTML = '<span class="spin"></span>Processing...';
+  btn.disabled  = true;
+
+  document.getElementById('progressSection').style.display = 'block';
+  document.getElementById('clipsSection').style.display    = 'none';
+  document.getElementById('progressLog').innerHTML = '';
+  setStep(3);
+
+  try {
+    const res  = await fetch('/api/generate-manual', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      credentials: 'include',
+      body: JSON.stringify({
+        url:    videoData.url,
+        clips:  manualClips,
+        quality: document.getElementById('manualQuality').value,
+        ratio:   document.getElementById('manualFormat').value,
+      }),
+    });
+    const data = await res.json();
+
+    if (res.status === 403 && data.error === 'limit_reached') {
+      showToast(data.message, true);
+      openUpgradeModal('pro', data.message);
+      btn.innerHTML = '✂️ Generate Selected Clips';
+      btn.disabled  = false;
+      document.getElementById('progressSection').style.display = 'none';
+      return;
+    }
+    if (data.error) throw new Error(data.error);
+
+    currentJobId = data.job_id;
+    pollTimer    = setInterval(pollStatus, 1000);
+  } catch(e) {
+    showToast('Error: ' + e.message, true);
+    btn.innerHTML = '✂️ Generate Selected Clips';
+    btn.disabled  = false;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -393,6 +393,167 @@ def api_generate():
 
     return jsonify({'job_id': job_id})
 
+
+@app.route('/api/generate-manual', methods=['POST'])
+def api_generate_manual():
+    sid  = get_session_id()
+    user = get_or_create_user(sid)
+    user = reset_daily_if_needed(user, sid)
+    data  = request.json or {}
+    url   = data.get('url', '').strip()
+    clips = data.get('clips', [])
+    quality = str(data.get('quality', 720))
+    ratio   = data.get('ratio', '16:9')
+
+    if not is_youtube_url(url):
+        return jsonify({'error': 'Invalid YouTube URL'}), 400
+    if not clips or len(clips) > 20:
+        return jsonify({'error': 'Send 1–20 clips'}), 400
+    for c in clips:
+        s, e = int(c.get('start', 0)), int(c.get('end', 0))
+        if e <= s or (e - s) < 3 or (e - s) > 600:
+            return jsonify({'error': f'Invalid range {s}–{e}s'}), 400
+
+    plan   = user['plan']
+    limits = PLAN_LIMITS[plan]
+    if limits['clips_per_day'] is not None:
+        remaining = limits['clips_per_day'] - user['clips_used_today']
+        if remaining <= 0:
+            return jsonify({'error': 'limit_reached', 'message': f"Daily limit reached. Upgrade for unlimited access."}), 403
+        clips = clips[:remaining]
+
+    if not check_ffmpeg():
+        return jsonify({'error': 'ffmpeg not available'}), 500
+
+    job_id = str(uuid.uuid4())[:8]
+    jobs[job_id] = {'status': 'running', 'progress': 0, 'logs': [], 'clips': []}
+    threading.Thread(
+        target=_process_manual,
+        args=(job_id, url, clips, int(quality), sid, ratio),
+        daemon=True,
+    ).start()
+    return jsonify({'job_id': job_id})
+
+
+def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
+    job     = jobs[job_id]
+    job_dir = os.path.join(CLIPS_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+
+    def log(msg, pct):
+        job['logs'].append(msg)
+        job['progress'] = pct
+
+    try:
+        log('Fetching video info...', 5)
+        vid  = extract_video_id(url)
+        info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), get_ydl_opts(sid=sid))
+        title    = info.get('title', 'clip')
+        inv_inst = info.get('_inv_inst', '')
+        dl_url   = f'{inv_inst}/watch?v={vid}' if inv_inst and vid else url
+        log(f'Found "{title}". Preparing {len(clips)} manual clips...', 15)
+
+        vf_filter = (
+            'crop=ih*9/16:ih' if ratio == '9:16' else
+            'crop=ih:ih'      if ratio == '1:1'  else
+            None
+        )
+        fmt = f'best[height<={quality}]/best[height<=720]/best'
+
+        stream_url = _invidious_stream_url(inv_inst, vid, quality) if inv_inst and vid else ''
+        if stream_url:
+            log('Using Invidious stream (no bot detection)...', 19)
+
+        result_clips = []
+        for i, clip in enumerate(clips):
+            start    = int(clip['start'])
+            end      = int(clip['end'])
+            duration = end - start
+            pct      = 20 + int((i + 1) / len(clips) * 75)
+            clip_name = f'clip_{i+1:02d}.mp4'
+            clip_path = os.path.join(job_dir, clip_name)
+            log(f'Encoding clip {i+1}/{len(clips)} ({start//60}:{start%60:02d} – {end//60}:{end%60:02d})...', pct)
+
+            if stream_url:
+                cmd = ['ffmpeg', '-ss', str(start), '-i', stream_url, '-t', str(duration)]
+                if vf_filter:
+                    cmd += ['-vf', vf_filter]
+                cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
+                res = subprocess.run(cmd, capture_output=True, timeout=300)
+                if res.returncode != 0:
+                    log(f'Warning: clip {i+1} ffmpeg error: {res.stderr.decode(errors="replace")[-300:]}', pct)
+                    continue
+            else:
+                raw_tmpl = os.path.join(job_dir, f'raw_{i+1:02d}.%(ext)s')
+                dl_opts  = get_ydl_opts({
+                    'format': fmt,
+                    'outtmpl': raw_tmpl,
+                    'download_ranges': yt_dlp.utils.download_range_func(None, [(start, end)]),
+                    'force_keyframes_at_cuts': True,
+                    'socket_timeout': 60,
+                    'retries': 3,
+                }, sid=sid)
+                try:
+                    with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                        ydl.download([dl_url])
+                except Exception as e:
+                    log(f'Warning: clip {i+1} download failed — {e}', pct)
+                    continue
+
+                raw_path = None
+                for f in os.listdir(job_dir):
+                    if f.startswith(f'raw_{i+1:02d}.') and not f.endswith('.part'):
+                        raw_path = os.path.join(job_dir, f)
+                        break
+                if not raw_path:
+                    log(f'Warning: clip {i+1} file not found', pct)
+                    continue
+
+                cmd = ['ffmpeg', '-i', raw_path, '-t', str(duration)]
+                if vf_filter:
+                    cmd += ['-vf', vf_filter]
+                cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
+                res = subprocess.run(cmd, capture_output=True)
+                if res.returncode != 0:
+                    log(f'Warning: ffmpeg failed for clip {i+1}: {res.stderr.decode(errors="replace")[-300:]}', pct)
+                try:
+                    os.unlink(raw_path)
+                except Exception:
+                    pass
+
+            if os.path.exists(clip_path) and os.path.getsize(clip_path) > 0:
+                size_mb = round(os.path.getsize(clip_path) / 1024 / 1024, 1)
+                result_clips.append({
+                    'name':     clip_name,
+                    'url':      f'/clips/{job_id}/{clip_name}',
+                    'start':    start,
+                    'duration': duration,
+                    'size_mb':  size_mb,
+                })
+            else:
+                log(f'Warning: clip {i+1} encode failed', pct)
+
+        if not result_clips:
+            raise RuntimeError('No clips produced. Check server logs.')
+
+        with get_db() as conn:
+            conn.execute(
+                'UPDATE users SET clips_used_today=clips_used_today+? WHERE session_id=?',
+                (len(result_clips), sid),
+            )
+            conn.commit()
+
+        job['clips']    = result_clips
+        job['status']   = 'done'
+        job['progress'] = 100
+        log(f'Done! {len(result_clips)} clips ready.', 100)
+
+    except Exception as e:
+        job['status'] = 'error'
+        job['error']  = str(e)
+        job['logs'].append(f'Error: {e}')
+
+
 def _moments_pcm(video_path, duration, num_clips, clip_len):
     """Sampling-based audio energy — probes N short clips, never reads full file."""
     import struct
