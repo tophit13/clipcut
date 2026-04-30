@@ -128,6 +128,38 @@ def get_fetch_urls(url):
             urls.append(f'{inst}/watch?v={vid}')
     return urls
 
+def _get_info_invidious(video_id):
+    """Fetch metadata from Invidious JSON API — no bot detection, no yt-dlp."""
+    for inst in INVIDIOUS:
+        try:
+            r = req_lib.get(
+                f'{inst}/api/v1/videos/{video_id}',
+                timeout=12,
+                headers={'User-Agent': 'Mozilla/5.0'},
+            )
+            if r.status_code != 200:
+                continue
+            d = r.json()
+            if not d.get('lengthSeconds'):
+                continue
+            thumbs = d.get('videoThumbnails', [])
+            thumb = next(
+                (t['url'] for t in thumbs if 'maxres' in t.get('quality', '')),
+                thumbs[0]['url'] if thumbs else '',
+            )
+            return {
+                'title':        d.get('title', 'video'),
+                'duration':     d.get('lengthSeconds', 0),
+                'thumbnail':    thumb,
+                'uploader':     d.get('author', ''),
+                'webpage_url':  f'https://www.youtube.com/watch?v={video_id}',
+                'original_url': f'https://www.youtube.com/watch?v={video_id}',
+                '_inv_inst':    inst,
+            }
+        except Exception:
+            continue
+    return None
+
 def ydl_extract(urls, opts):
     """Try each URL in sequence; return info dict from first that works."""
     last_err = None
@@ -243,7 +275,8 @@ def api_info():
     if not is_youtube_url(url):
         return jsonify({'ok': False, 'error': 'Not a valid YouTube URL'}), 400
     try:
-        info = ydl_extract(get_fetch_urls(url), get_ydl_opts())
+        vid = extract_video_id(url)
+        info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), get_ydl_opts())
         mins = int(info.get('duration', 0) // 60)
         secs = int(info.get('duration', 0) % 60)
         return jsonify({
@@ -537,8 +570,9 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
 
         fmt = f'best[height<={quality}]/best[height<=720]/best'
 
-        # Step 1: get metadata via proxy
-        info     = ydl_extract(get_fetch_urls(url), get_ydl_opts())
+        # Step 1: get metadata — try Invidious API first (no bot detection), fall back to yt-dlp
+        vid  = extract_video_id(url)
+        info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), get_ydl_opts())
         duration = int(info.get('duration', 0))
         title    = info.get('title', 'clip')
         log(f'Found "{title}" ({duration//60}:{duration%60:02d}).', 15)
