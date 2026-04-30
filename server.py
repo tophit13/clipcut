@@ -195,7 +195,7 @@ def check_ffmpeg():
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
-def get_ydl_opts(extra=None):
+def get_ydl_opts(extra=None, sid=None):
     """Base yt-dlp options — impersonate iOS YouTube app to bypass bot detection."""
     opts = {
         'quiet': True,
@@ -220,7 +220,11 @@ def get_ydl_opts(extra=None):
             opts['proxy'] = proxy
 
     # Session-specific cookie file (uploaded by user) takes priority
-    sid = session.get('sid', '')
+    if sid is None:
+        try:
+            sid = session.get('sid', '')
+        except RuntimeError:
+            sid = ''
     session_cookie_path = os.path.join(CLIPS_DIR, f'cookies_{sid}.txt') if sid else ''
     if session_cookie_path and os.path.exists(session_cookie_path):
         opts['cookiefile'] = session_cookie_path
@@ -623,7 +627,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
 
         # Step 1: get metadata — try Invidious API first (no bot detection), fall back to yt-dlp
         vid  = extract_video_id(url)
-        info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), get_ydl_opts())
+        info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), get_ydl_opts(sid=sid))
         duration = int(info.get('duration', 0))
         title    = info.get('title', 'clip')
         # Use Invidious watch URL for downloads to avoid YouTube bot detection
@@ -650,7 +654,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
                             'outtmpl': audio_tmpl,
                             'socket_timeout': 60,
                             'retries': 2,
-                        })) as ydl:
+                        }, sid=sid)) as ydl:
                             ydl.download([dl_url])
                         audio_path = next(
                             (os.path.join(job_dir, f) for f in os.listdir(job_dir) if f.startswith('audio.')),
@@ -720,7 +724,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
                     'force_keyframes_at_cuts': True,
                     'socket_timeout': 60,
                     'retries': 3,
-                })
+                }, sid=sid)
                 try:
                     with yt_dlp.YoutubeDL(dl_opts) as ydl:
                         ydl.download([dl_url])
