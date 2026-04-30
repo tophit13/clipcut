@@ -106,10 +106,12 @@ jobs = {}
 # ---------------------------------------------------------------------------
 
 INVIDIOUS = [
+    'https://inv.nadeko.net',
     'https://yewtu.be',
-    'https://inv.riverside.rocks',
     'https://invidious.nerdvpn.de',
+    'https://inv.tux.pizza',
     'https://iv.ggtyler.dev',
+    'https://invidious.privacydev.net',
 ]
 
 def is_youtube_url(url):
@@ -575,6 +577,9 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
         info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), get_ydl_opts())
         duration = int(info.get('duration', 0))
         title    = info.get('title', 'clip')
+        # Use Invidious watch URL for downloads to avoid YouTube bot detection
+        inv_inst = info.get('_inv_inst', '')
+        dl_url   = f'{inv_inst}/watch?v={vid}' if inv_inst and vid else url
         log(f'Found "{title}" ({duration//60}:{duration%60:02d}).', 15)
 
         # Step 2: AI moment detection
@@ -597,7 +602,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
                             'socket_timeout': 60,
                             'retries': 2,
                         })) as ydl:
-                            ydl.download([url])
+                            ydl.download([dl_url])
                         audio_path = next(
                             (os.path.join(job_dir, f) for f in os.listdir(job_dir) if f.startswith('audio.')),
                             None
@@ -650,7 +655,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             })
             try:
                 with yt_dlp.YoutubeDL(dl_opts) as ydl:
-                    ydl.download([url])
+                    ydl.download([dl_url])
             except Exception as e:
                 log(f'Warning: clip {i+1} download failed — {e}', pct)
                 continue
