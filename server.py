@@ -106,12 +106,18 @@ jobs = {}
 # ---------------------------------------------------------------------------
 
 INVIDIOUS = [
-    'https://inv.nadeko.net',
     'https://yewtu.be',
-    'https://invidious.nerdvpn.de',
-    'https://inv.tux.pizza',
-    'https://iv.ggtyler.dev',
+    'https://inv.nadeko.net',
     'https://invidious.privacydev.net',
+    'https://invidious.nerdvpn.de',
+    'https://iv.ggtyler.dev',
+    'https://yt.artemislena.eu',
+    'https://invidious.fdn.fr',
+    'https://invidious.flokinet.to',
+    'https://iv.melmac.space',
+    'https://invidious.lunar.icu',
+    'https://invidious.asir.dev',
+    'https://vid.priv.au',
 ]
 
 def is_youtube_url(url):
@@ -177,33 +183,48 @@ def _invidious_stream_url(inst, video_id, quality):
     return f'{inst}/latest_version?id={video_id}&itag=22'
 
 def _ffmpeg_clip(stream_url, start, duration, vf_filter, clip_path):
-    """Run ffmpeg to cut a clip from a stream URL. Returns True on success."""
-    cmd = ['ffmpeg', '-ss', str(start), '-i', stream_url, '-t', str(duration)]
+    """Run ffmpeg to cut a clip. Returns True on success.
+    Uses a 60s network timeout so bad instances fail fast."""
+    cmd = [
+        'ffmpeg',
+        '-timeout', '60000000',       # 60s per-connection timeout (microseconds)
+        '-ss', str(start),
+        '-i', stream_url,
+        '-t', str(duration),
+    ]
     if vf_filter:
         cmd += ['-vf', vf_filter]
     cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
     try:
-        res = subprocess.run(cmd, capture_output=True, timeout=300)
+        res = subprocess.run(cmd, capture_output=True, timeout=120)
         return res.returncode == 0 and os.path.exists(clip_path) and os.path.getsize(clip_path) > 0
     except subprocess.TimeoutExpired:
         return False
 
 def _invidious_clip(vid, quality, start, duration, vf_filter, clip_path, preferred_inst=''):
     """Try every Invidious instance to download one clip section via ffmpeg.
+    Uses ?local=true so Invidious redirects to a YouTube CDN URL —
+    Railway then downloads from CDN (googlevideo.com) which is not bot-detected.
+    Falls back to proxied stream if local redirect fails.
     Returns (success: bool, working_inst: str)."""
     itag = 37 if quality >= 1080 else (22 if quality >= 720 else 18)
+    fallback_itag = 22  # 720p combined mp4, most universally available
+
     instances = list(INVIDIOUS)
     if preferred_inst and preferred_inst in instances:
         instances.remove(preferred_inst)
         instances.insert(0, preferred_inst)
+
     for inst in instances:
-        stream_url = f'{inst}/latest_version?id={vid}&itag={itag}'
-        if _ffmpeg_clip(stream_url, start, duration, vf_filter, clip_path):
-            return True, inst
-        # Try lower quality on same instance before moving on
-        if itag != 22:
-            stream_url = f'{inst}/latest_version?id={vid}&itag=22'
-            if _ffmpeg_clip(stream_url, start, duration, vf_filter, clip_path):
+        # ?local=true: Invidious returns a redirect to YouTube CDN signed URL
+        # Railway follows the redirect and downloads from CDN directly
+        for try_itag in ([itag, fallback_itag] if itag != fallback_itag else [itag]):
+            local_url = f'{inst}/latest_version?id={vid}&itag={try_itag}&local=true'
+            if _ffmpeg_clip(local_url, start, duration, vf_filter, clip_path):
+                return True, inst
+            # If local redirect fails, try proxied (Invidious buffers the stream)
+            proxy_url = f'{inst}/latest_version?id={vid}&itag={try_itag}'
+            if _ffmpeg_clip(proxy_url, start, duration, vf_filter, clip_path):
                 return True, inst
     return False, ''
 
