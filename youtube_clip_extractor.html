@@ -362,6 +362,22 @@ body::before{
     <div class="step" id="s3"><div class="step-num">3</div> CLIPS</div>
   </div>
 
+  <!-- Cookie upload banner (shown only when needed) -->
+  <div id="cookieBanner" style="display:none;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px 16px;margin-bottom:12px;font-size:13px;color:#aaa;line-height:1.5">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div>
+        <span style="color:#fff;font-weight:600">YouTube bot detection triggered.</span>
+        Upload your <code style="background:#222;padding:2px 5px;border-radius:3px">cookies.txt</code> to continue.
+        <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" style="color:var(--accent);margin-left:6px">Get the Chrome extension →</a>
+      </div>
+      <label style="cursor:pointer;background:var(--accent);color:#000;font-weight:700;padding:6px 14px;border-radius:6px;font-size:12px;white-space:nowrap">
+        Upload cookies.txt
+        <input type="file" id="cookieFileInput" accept=".txt" style="display:none" onchange="uploadCookies(event)">
+      </label>
+    </div>
+    <div id="cookieStatus" style="margin-top:6px;display:none"></div>
+  </div>
+
   <div class="section">
     <div class="label">YouTube URL</div>
     <div class="input-row">
@@ -654,6 +670,25 @@ if (new URLSearchParams(location.search).get('upgraded') === '1') {
 // Core flow
 // ---------------------------------------------------------------------------
 
+async function uploadCookies(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const status = document.getElementById('cookieStatus');
+  status.style.display = 'block';
+  status.innerHTML = '<span style="color:#aaa">Uploading...</span>';
+  const form = new FormData();
+  form.append('cookies', file);
+  try {
+    const res  = await fetch('/api/upload-cookies', { method:'POST', body: form, credentials:'include' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    status.innerHTML = '<span style="color:#a3e635">✓ Cookies loaded — click Analyze again</span>';
+    document.getElementById('cookieBanner').style.borderColor = '#a3e635';
+  } catch(e) {
+    status.innerHTML = '<span style="color:#f87171">✗ ' + e.message + '</span>';
+  }
+}
+
 async function analyzeURL() {
   const url = document.getElementById('urlInput').value.trim();
   if (!url) { showToast('Please paste a YouTube URL first'); return; }
@@ -668,8 +703,13 @@ async function analyzeURL() {
       body: JSON.stringify({url}), credentials:'include',
     });
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error);
-
+    if (!data.ok) {
+      if (data.error && data.error.includes('bot')) {
+        document.getElementById('cookieBanner').style.display = 'block';
+      }
+      throw new Error(data.error);
+    }
+    document.getElementById('cookieBanner').style.display = 'none';
     videoData = {url, title: data.title, dur: data.duration_str, thumbnail: data.thumbnail};
     showVideoPreview(videoData);
   } catch(e) {

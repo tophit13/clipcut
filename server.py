@@ -219,6 +219,15 @@ def get_ydl_opts(extra=None):
         if proxy:
             opts['proxy'] = proxy
 
+    # Session-specific cookie file (uploaded by user) takes priority
+    sid = session.get('sid', '')
+    session_cookie_path = os.path.join(CLIPS_DIR, f'cookies_{sid}.txt') if sid else ''
+    if session_cookie_path and os.path.exists(session_cookie_path):
+        opts['cookiefile'] = session_cookie_path
+        if extra:
+            opts.update(extra)
+        return opts
+
     # Optionally layer cookies on top if provided
     cookies = os.environ.get('YOUTUBE_COOKIES', '').strip()
     if cookies:
@@ -285,6 +294,31 @@ def api_me():
         'subtitles': limits['subtitles'],
         'api_key': user['api_key'] if plan == 'business' else None,
     })
+
+@app.route('/api/upload-cookies', methods=['POST'])
+def api_upload_cookies():
+    sid = get_session_id()
+    f = request.files.get('cookies')
+    if not f:
+        return jsonify({'ok': False, 'error': 'No file uploaded'}), 400
+    content = f.read().decode('utf-8', errors='replace')
+    # Normalize tabs
+    fixed = []
+    for line in content.splitlines():
+        if line.startswith('#') or not line.strip():
+            fixed.append(line)
+        elif '\t' not in line:
+            parts = line.split(None, 6)
+            fixed.append('\t'.join(parts) if len(parts) >= 7 else line)
+        else:
+            fixed.append(line)
+    content = '\n'.join(fixed)
+    if not content.startswith('# Netscape'):
+        content = '# Netscape HTTP Cookie File\n' + content
+    cookie_path = os.path.join(CLIPS_DIR, f'cookies_{sid}.txt')
+    with open(cookie_path, 'w', encoding='utf-8') as fp:
+        fp.write(content)
+    return jsonify({'ok': True})
 
 @app.route('/api/info', methods=['POST'])
 def api_info():
