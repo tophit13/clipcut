@@ -120,6 +120,18 @@ INVIDIOUS = [
     'https://vid.priv.au',
 ]
 
+# Piped is a separate YouTube frontend with its own instance network.
+# Its /streams API returns direct YouTube CDN URLs (googlevideo.com) —
+# no proxying, works from any IP because CDN URLs are signed by YouTube's servers.
+PIPED_INSTANCES = [
+    'https://pipedapi.kavin.rocks',
+    'https://pipedapi.tokhmi.xyz',
+    'https://piped-api.garudalinux.org',
+    'https://pipedapi.syncpundit.io',
+    'https://api.piped.yt',
+    'https://pipedapi.moomoo.me',
+]
+
 def is_youtube_url(url):
     return bool(re.match(r'https?://(www\.)?(youtube\.com/watch|youtu\.be/)', url))
 
@@ -216,31 +228,103 @@ def _ffmpeg_clip(stream_url, start, duration, vf_filter, clip_path):
     except subprocess.TimeoutExpired:
         return False
 
+def _ffmpeg_clip_adaptive(video_url, audio_url, start, duration, vf_filter, clip_path):
+    """Clip from separate video-only + audio-only CDN streams (DASH/adaptive).
+    Used when combined (muxed) streams are not available — common on long videos."""
+    cmd = [
+        'ffmpeg',
+        '-timeout', '60000000',
+        '-ss', str(start), '-i', video_url,
+        '-ss', str(start), '-i', audio_url,
+        '-t', str(duration),
+        '-map', '0:v:0', '-map', '1:a:0',
+    ]
+    if vf_filter:
+        cmd += ['-vf', vf_filter]
+    cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
+    try:
+        res = subprocess.run(cmd, capture_output=True, timeout=300)
+        return res.returncode == 0 and os.path.exists(clip_path) and os.path.getsize(clip_path) > 0
+    except subprocess.TimeoutExpired:
+        return False
+
+def _get_cdnurls_piped(video_id):
+    """Get direct YouTube CDN URLs via Piped API.
+    Piped fetches stream URLs server-side; Railway uses those signed CDN URLs directly.
+    Returns (video_url, audio_url) — both are googlevideo.com URLs."""
+    for inst in PIPED_INSTANCES:
+        try:
+            r = req_lib.get(f'{inst}/streams/{video_id}', timeout=12,
+                           headers={'User-Agent': 'Mozilla/5.0'})
+            if r.status_code != 200:
+                continue
+            d = r.json()
+            if d.get('error') or not d.get('videoStreams'):
+                continue
+
+            # Best video stream: mp4, video-only, ≤720p
+            video_url = ''
+            best_h = 0
+            for vs in d.get('videoStreams', []):
+                if not vs.get('videoOnly', True):
+                    continue
+                if 'mp4' not in vs.get('mimeType', '').lower():
+                    continue
+                q   = vs.get('quality', '0p')
+                h   = int(q.replace('p', '').split('_')[0]) if 'p' in q else 0
+                url = vs.get('url', '')
+                if url and 144 <= h <= 720 and h > best_h:
+                    best_h    = h
+                    video_url = url
+
+            # Best audio stream: m4a (aac), highest bitrate
+            audio_url = ''
+            best_abr  = 0
+            for aus in d.get('audioStreams', []):
+                mime = aus.get('mimeType', '').lower()
+                url  = aus.get('url', '')
+                abr  = aus.get('bitrate', 0)
+                if url and ('m4a' in mime or ('mp4' in mime and 'audio' in mime)):
+                    if abr > best_abr:
+                        best_abr  = abr
+                        audio_url = url
+
+            if video_url and audio_url:
+                return video_url, audio_url
+        except Exception:
+            continue
+    return '', ''
+
 def _invidious_clip(vid, quality, start, duration, vf_filter, clip_path,
-                    preferred_inst='', direct_stream_url=''):
+                    preferred_inst='', direct_stream_url='',
+                    piped_video_url='', piped_audio_url=''):
     """Download one clip section via ffmpeg. Strategy (in order):
     1. Direct YouTube CDN URL from Invidious API (?local=true) — fastest, no proxy needed
     2. /latest_version?local=true on each instance — Invidious redirects to CDN
     3. /latest_version (proxied) on each instance — Invidious buffers the stream
     Returns (success: bool, working_inst: str)."""
 
-    # 1. Direct CDN URL obtained at metadata time (most reliable — CDN is not IP-restricted)
+    # Strategy 1: Combined stream from Invidious API (fast, no merge needed)
     if direct_stream_url:
         if _ffmpeg_clip(direct_stream_url, start, duration, vf_filter, clip_path):
             return True, preferred_inst
 
-    itag = 22 if quality >= 720 else 18  # combined mp4 streams only (no merge needed)
+    # Strategy 2: Piped API adaptive streams (separate video+audio, direct CDN)
+    # This is the most reliable path — Piped has good uptime and returns real CDN URLs
+    if piped_video_url and piped_audio_url:
+        if _ffmpeg_clip_adaptive(piped_video_url, piped_audio_url, start, duration, vf_filter, clip_path):
+            return True, preferred_inst
+
+    # Strategy 3: Invidious /latest_version (redirect to CDN or proxied)
+    itag = 22 if quality >= 720 else 18
     instances = list(INVIDIOUS)
     if preferred_inst and preferred_inst in instances:
         instances.remove(preferred_inst)
         instances.insert(0, preferred_inst)
-
     for inst in instances:
-        # 2. Ask Invidious to redirect us to a fresh CDN URL
         local_url = f'{inst}/latest_version?id={vid}&itag={itag}&local=true'
         if _ffmpeg_clip(local_url, start, duration, vf_filter, clip_path):
             return True, inst
-        # 3. Proxied stream through Invidious
         proxy_url = f'{inst}/latest_version?id={vid}&itag={itag}'
         if _ffmpeg_clip(proxy_url, start, duration, vf_filter, clip_path):
             return True, inst
@@ -548,7 +632,10 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
             None
         )
 
-        log('Connecting to stream (no bot detection)...', 19)
+        log('Fetching stream URLs...', 19)
+        piped_v, piped_a = _get_cdnurls_piped(vid) if vid else ('', '')
+        if piped_v:
+            log('Got CDN URLs via Piped API.', 20)
         working_inst = inv_inst
 
         result_clips = []
@@ -562,7 +649,8 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
             log(f'Encoding clip {i+1}/{len(clips)} ({start//60}:{start%60:02d} – {end//60}:{end%60:02d})...', pct)
 
             if vid:
-                ok, working_inst = _invidious_clip(vid, quality, start, duration, vf_filter, clip_path, working_inst, direct_url)
+                ok, working_inst = _invidious_clip(vid, quality, start, duration, vf_filter, clip_path,
+                                                   working_inst, direct_url, piped_v, piped_a)
                 if not ok:
                     log(f'Warning: clip {i+1} — all Invidious instances failed, skipping', pct)
                     continue
@@ -902,7 +990,10 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             None
         )
 
-        log('Connecting to stream (no bot detection)...', 19)
+        log('Fetching stream URLs...', 19)
+        piped_v, piped_a = _get_cdnurls_piped(vid) if vid else ('', '')
+        if piped_v:
+            log('Got CDN URLs via Piped API.', 20)
         working_inst = info.get('_inv_inst', '')
         direct_url   = info.get('_stream_url', '')
 
@@ -913,7 +1004,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             log(f'Downloading clip {i+1}/{num_clips} ({start//60}:{start%60:02d} – {(start+clip_len)//60}:{(start+clip_len)%60:02d})...', pct)
 
             if vid:
-                ok, working_inst = _invidious_clip(vid, quality, start, clip_len, vf_filter, clip_path, working_inst, direct_url)
+                ok, working_inst = _invidious_clip(vid, quality, start, clip_len, vf_filter, clip_path, working_inst, direct_url, piped_v, piped_a)
                 if not ok:
                     log(f'Warning: clip {i+1} — all Invidious instances failed, skipping', pct)
                     continue
