@@ -331,7 +331,8 @@ def api_info():
         return jsonify({'ok': False, 'error': 'Not a valid YouTube URL'}), 400
     try:
         vid = extract_video_id(url)
-        info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), get_ydl_opts())
+        _info_opts = get_ydl_opts({'format': 'bestvideo+bestaudio/best/bestvideo/bestaudio'})
+        info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), _info_opts)
         mins = int(info.get('duration', 0) // 60)
         secs = int(info.get('duration', 0) % 60)
         return jsonify({
@@ -447,7 +448,8 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
     try:
         log('Fetching video info...', 5)
         vid  = extract_video_id(url)
-        info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), get_ydl_opts(sid=sid))
+        _info_opts = get_ydl_opts({'format': 'bestvideo+bestaudio/best/bestvideo/bestaudio'}, sid=sid)
+        info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), _info_opts)
         title    = info.get('title', 'clip')
         inv_inst = info.get('_inv_inst', '')
         dl_url   = f'{inv_inst}/watch?v={vid}' if inv_inst and vid else url
@@ -788,7 +790,8 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
 
         # Step 1: get metadata — try Invidious API first (no bot detection), fall back to yt-dlp
         vid  = extract_video_id(url)
-        info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), get_ydl_opts(sid=sid))
+        _info_opts = get_ydl_opts({'format': 'bestvideo+bestaudio/best/bestvideo/bestaudio'}, sid=sid)
+        info = (_get_info_invidious(vid) if vid else None) or ydl_extract(get_fetch_urls(url), _info_opts)
         duration = int(info.get('duration', 0))
         title    = info.get('title', 'clip')
         # Use Invidious watch URL for downloads to avoid YouTube bot detection
