@@ -165,16 +165,35 @@ def _get_info_invidious(video_id):
             if not d.get('lengthSeconds'):
                 continue
 
-            # Extract best combined stream URL (720p or 360p mp4, audio+video in one)
+            # Combined stream (720p or 360p mp4 — audio+video in one)
             stream_url = ''
             for fmt in d.get('formatStreams', []):
                 itag = str(fmt.get('itag', ''))
                 url  = fmt.get('url', '')
-                if itag == '22' and url:   # 720p — take immediately
+                if itag == '22' and url:
                     stream_url = url
                     break
-                if itag == '18' and url:   # 360p fallback
+                if itag == '18' and url:
                     stream_url = url
+
+            # Adaptive streams (separate video + audio — always present on long videos)
+            # ?local=true makes Invidious return direct CDN URLs here too
+            adaptive_video = ''
+            adaptive_audio = ''
+            best_h = 0
+            for fmt in d.get('adaptiveFormats', []):
+                mime = fmt.get('type', '').lower()
+                url  = fmt.get('url', '')
+                if not url:
+                    continue
+                if 'video/mp4' in mime and 'avc1' in mime:
+                    ql = fmt.get('qualityLabel', '0p')
+                    h  = int(ql.replace('p', '').split('_')[0]) if 'p' in ql else 0
+                    if 144 <= h <= 720 and h > best_h:
+                        best_h = h
+                        adaptive_video = url
+                elif 'audio/mp4' in mime and not adaptive_audio:
+                    adaptive_audio = url
 
             thumbs = d.get('videoThumbnails', [])
             thumb = next(
@@ -189,7 +208,9 @@ def _get_info_invidious(video_id):
                 'webpage_url':  f'https://www.youtube.com/watch?v={video_id}',
                 'original_url': f'https://www.youtube.com/watch?v={video_id}',
                 '_inv_inst':    inst,
-                '_stream_url':  stream_url,   # direct YouTube CDN URL
+                '_stream_url':  stream_url,
+                '_adaptive_video_url': adaptive_video,
+                '_adaptive_audio_url': adaptive_audio,
             }
         except Exception:
             continue
@@ -244,7 +265,11 @@ def _ffmpeg_clip_adaptive(video_url, audio_url, start, duration, vf_filter, clip
     cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
     try:
         res = subprocess.run(cmd, capture_output=True, timeout=300)
-        return res.returncode == 0 and os.path.exists(clip_path) and os.path.getsize(clip_path) > 0
+        ok = res.returncode == 0 and os.path.exists(clip_path) and os.path.getsize(clip_path) > 0
+        if not ok:
+            import sys
+            print(f'[ffmpeg-adaptive] rc={res.returncode} stderr={res.stderr[-400:].decode(errors="replace")}', file=sys.stderr)
+        return ok
     except subprocess.TimeoutExpired:
         return False
 
@@ -252,14 +277,17 @@ def _get_cdnurls_piped(video_id):
     """Get direct YouTube CDN URLs via Piped API.
     Piped fetches stream URLs server-side; Railway uses those signed CDN URLs directly.
     Returns (video_url, audio_url) — both are googlevideo.com URLs."""
+    import sys
     for inst in PIPED_INSTANCES:
         try:
             r = req_lib.get(f'{inst}/streams/{video_id}', timeout=12,
                            headers={'User-Agent': 'Mozilla/5.0'})
             if r.status_code != 200:
+                print(f'[piped] {inst} status={r.status_code}', file=sys.stderr)
                 continue
             d = r.json()
             if d.get('error') or not d.get('videoStreams'):
+                print(f'[piped] {inst} error={d.get("error")} noStreams={not d.get("videoStreams")}', file=sys.stderr)
                 continue
 
             # Best video stream: mp4, video-only, ≤720p
@@ -290,38 +318,51 @@ def _get_cdnurls_piped(video_id):
                         audio_url = url
 
             if video_url and audio_url:
+                print(f'[piped] {inst} got v={video_url[:60]} a={audio_url[:60]}', file=sys.stderr)
                 return video_url, audio_url
-        except Exception:
+            print(f'[piped] {inst} parsed but missing urls v={bool(video_url)} a={bool(audio_url)}', file=sys.stderr)
+        except Exception as e:
+            print(f'[piped] {inst} exception={e}', file=sys.stderr)
             continue
     return '', ''
 
 def _invidious_clip(vid, quality, start, duration, vf_filter, clip_path,
                     preferred_inst='', direct_stream_url='',
+                    adaptive_video_url='', adaptive_audio_url='',
                     piped_video_url='', piped_audio_url=''):
-    """Download one clip section via ffmpeg. Strategy (in order):
-    1. Direct YouTube CDN URL from Invidious API (?local=true) — fastest, no proxy needed
-    2. /latest_version?local=true on each instance — Invidious redirects to CDN
-    3. /latest_version (proxied) on each instance — Invidious buffers the stream
+    """Download one clip section via ffmpeg. Tries strategies in order.
     Returns (success: bool, working_inst: str)."""
+    import sys
 
-    # Strategy 1: Combined stream from Invidious API (fast, no merge needed)
+    # Strategy 1: Combined stream from Invidious API (audio+video in one file)
     if direct_stream_url:
+        print(f'[clip] S1 combined url={direct_stream_url[:60]}', file=sys.stderr)
         if _ffmpeg_clip(direct_stream_url, start, duration, vf_filter, clip_path):
             return True, preferred_inst
+        print('[clip] S1 failed', file=sys.stderr)
 
-    # Strategy 2: Piped API adaptive streams (separate video+audio, direct CDN)
-    # This is the most reliable path — Piped has good uptime and returns real CDN URLs
+    # Strategy 2: Invidious adaptive streams (separate video+audio CDN URLs)
+    if adaptive_video_url and adaptive_audio_url:
+        print(f'[clip] S2 adaptive inv v={adaptive_video_url[:60]}', file=sys.stderr)
+        if _ffmpeg_clip_adaptive(adaptive_video_url, adaptive_audio_url, start, duration, vf_filter, clip_path):
+            return True, preferred_inst
+        print('[clip] S2 failed', file=sys.stderr)
+
+    # Strategy 3: Piped API adaptive streams
     if piped_video_url and piped_audio_url:
+        print(f'[clip] S3 piped v={piped_video_url[:60]}', file=sys.stderr)
         if _ffmpeg_clip_adaptive(piped_video_url, piped_audio_url, start, duration, vf_filter, clip_path):
             return True, preferred_inst
+        print('[clip] S3 failed', file=sys.stderr)
 
-    # Strategy 3: Invidious /latest_version (redirect to CDN or proxied)
+    # Strategy 4: Invidious /latest_version (redirect to CDN or proxied)
     itag = 22 if quality >= 720 else 18
     instances = list(INVIDIOUS)
     if preferred_inst and preferred_inst in instances:
         instances.remove(preferred_inst)
         instances.insert(0, preferred_inst)
     for inst in instances:
+        print(f'[clip] S4 latest_version inst={inst}', file=sys.stderr)
         local_url = f'{inst}/latest_version?id={vid}&itag={itag}&local=true'
         if _ffmpeg_clip(local_url, start, duration, vf_filter, clip_path):
             return True, inst
@@ -329,6 +370,7 @@ def _invidious_clip(vid, quality, start, duration, vf_filter, clip_path,
         if _ffmpeg_clip(proxy_url, start, duration, vf_filter, clip_path):
             return True, inst
 
+    print('[clip] all strategies failed', file=sys.stderr)
     return False, ''
 
 def ydl_extract(urls, opts):
@@ -623,6 +665,8 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
         title    = info.get('title', 'clip')
         inv_inst   = info.get('_inv_inst', '')
         direct_url = info.get('_stream_url', '')
+        adaptive_v = info.get('_adaptive_video_url', '')
+        adaptive_a = info.get('_adaptive_audio_url', '')
         dl_url     = f'{inv_inst}/watch?v={vid}' if inv_inst and vid else url
         log(f'Found "{title}". Preparing {len(clips)} manual clips...', 15)
 
@@ -634,7 +678,9 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
 
         log('Fetching stream URLs...', 19)
         piped_v, piped_a = _get_cdnurls_piped(vid) if vid else ('', '')
-        if piped_v:
+        if adaptive_v:
+            log('Got adaptive CDN URLs via Invidious.', 20)
+        elif piped_v:
             log('Got CDN URLs via Piped API.', 20)
         working_inst = inv_inst
 
@@ -650,7 +696,7 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
 
             if vid:
                 ok, working_inst = _invidious_clip(vid, quality, start, duration, vf_filter, clip_path,
-                                                   working_inst, direct_url, piped_v, piped_a)
+                                                   working_inst, direct_url, adaptive_v, adaptive_a, piped_v, piped_a)
                 if not ok:
                     log(f'Warning: clip {i+1} — all Invidious instances failed, skipping', pct)
                     continue
@@ -990,12 +1036,17 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             None
         )
 
+        working_inst  = info.get('_inv_inst', '')
+        direct_url    = info.get('_stream_url', '')
+        adaptive_v    = info.get('_adaptive_video_url', '')
+        adaptive_a    = info.get('_adaptive_audio_url', '')
+
         log('Fetching stream URLs...', 19)
         piped_v, piped_a = _get_cdnurls_piped(vid) if vid else ('', '')
-        if piped_v:
+        if adaptive_v:
+            log('Got adaptive CDN URLs via Invidious.', 20)
+        elif piped_v:
             log('Got CDN URLs via Piped API.', 20)
-        working_inst = info.get('_inv_inst', '')
-        direct_url   = info.get('_stream_url', '')
 
         for i, start in enumerate(starts):
             pct       = 20 + int((i + 1) / num_clips * 75)
@@ -1004,7 +1055,8 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             log(f'Downloading clip {i+1}/{num_clips} ({start//60}:{start%60:02d} – {(start+clip_len)//60}:{(start+clip_len)%60:02d})...', pct)
 
             if vid:
-                ok, working_inst = _invidious_clip(vid, quality, start, clip_len, vf_filter, clip_path, working_inst, direct_url, piped_v, piped_a)
+                ok, working_inst = _invidious_clip(vid, quality, start, clip_len, vf_filter, clip_path,
+                                                   working_inst, direct_url, adaptive_v, adaptive_a, piped_v, piped_a)
                 if not ok:
                     log(f'Warning: clip {i+1} — all Invidious instances failed, skipping', pct)
                     continue
