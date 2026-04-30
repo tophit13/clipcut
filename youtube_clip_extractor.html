@@ -355,6 +355,21 @@ body::before{
 
 /* manual settings row */
 .manual-settings{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
+
+/* editable time inputs inside clip rows */
+.mc-time-edit{font-size:12px;font-family:'Space Mono',monospace;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px 7px;width:58px;text-align:center;outline:none;transition:border-color 0.15s}
+.mc-time-edit:focus{border-color:var(--accent)}
+.mc-edit-arrow{font-size:12px;color:var(--muted);margin:0 2px}
+
+/* manual add row */
+.mc-add-row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:12px 14px;background:var(--surface2);border-radius:8px;border:1px dashed var(--border);margin-top:10px}
+.mc-add-label{font-size:11px;font-family:'Space Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:1px;white-space:nowrap}
+.mc-add-inputs{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mc-time-inp{font-size:13px;font-family:'Space Mono',monospace;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:7px 10px;width:72px;text-align:center;outline:none;transition:border-color 0.15s}
+.mc-time-inp:focus{border-color:var(--accent)}
+.mc-add-arrow{font-size:14px;color:var(--muted2)}
+.btn-add-clip{background:var(--accent);color:#000;border:none;border-radius:6px;padding:8px 16px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;transition:all 0.15s}
+.btn-add-clip:hover{background:#d4eb2e}
 </style>
 </head>
 <body>
@@ -524,6 +539,19 @@ body::before{
         <div class="tl-hint">Click and drag to mark a clip segment · Click a clip to remove it</div>
       </div>
       <div id="mcList"></div>
+
+      <!-- manual add row -->
+      <div class="mc-add-row">
+        <span class="mc-add-label">Add clip manually</span>
+        <div class="mc-add-inputs">
+          <input class="mc-time-inp" id="addStart" placeholder="0:00" maxlength="8" spellcheck="false"
+            onkeydown="if(event.key==='Enter')document.getElementById('addEnd').focus()">
+          <span class="mc-add-arrow">→</span>
+          <input class="mc-time-inp" id="addEnd" placeholder="1:00" maxlength="8" spellcheck="false"
+            onkeydown="if(event.key==='Enter')addManualClip()">
+          <button class="btn-add-clip" onclick="addManualClip()">+ Add</button>
+        </div>
+      </div>
     </div>
 
     <div class="manual-settings">
@@ -1100,6 +1128,38 @@ function tlMouseLeave(e) {
   if (tlDragging) tlMouseUp(e);
 }
 
+function parseTimeStr(s) {
+  s = s.trim();
+  const parts = s.split(':').map(Number);
+  if (parts.some(isNaN) || parts.length < 2) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] * 3600 + parts[1] * 60 + parts[2];
+}
+
+function updateClipTime(idx, field, val) {
+  const secs = parseTimeStr(val);
+  if (secs === null || secs < 0) return;
+  manualClips[idx][field] = secs;
+  // fix end < start
+  if (manualClips[idx].end <= manualClips[idx].start) {
+    if (field === 'start') manualClips[idx].end = manualClips[idx].start + 30;
+    else manualClips[idx].start = Math.max(0, manualClips[idx].end - 30);
+  }
+  renderTimeline();
+}
+
+function addManualClip() {
+  const start = parseTimeStr(document.getElementById('addStart').value);
+  const end   = parseTimeStr(document.getElementById('addEnd').value);
+  if (start === null || end === null) { showToast('Enter times as M:SS or H:MM:SS', true); return; }
+  if (end <= start) { showToast('End must be after start', true); return; }
+  if ((end - start) < 3) { showToast('Clip must be at least 3 seconds', true); return; }
+  manualClips.push({start, end});
+  document.getElementById('addStart').value = '';
+  document.getElementById('addEnd').value = '';
+  renderTimeline();
+}
+
 function removeManualClip(idx) {
   manualClips.splice(idx, 1);
   renderTimeline();
@@ -1118,13 +1178,13 @@ function renderTimeline() {
   // timeline selections
   sels.innerHTML = '';
   manualClips.forEach((c, i) => {
-    const leftPct  = (c.start / tlVideoDur) * 100;
-    const widthPct = ((c.end - c.start) / tlVideoDur) * 100;
+    const leftPct  = tlVideoDur ? (c.start / tlVideoDur) * 100 : 0;
+    const widthPct = tlVideoDur ? ((c.end - c.start) / tlVideoDur) * 100 : 0;
     const el = document.createElement('div');
     el.className = 'tl-selection';
     el.style.left  = leftPct + '%';
-    el.style.width = widthPct + '%';
-    el.title = `Clip ${i+1}: ${fmtTime(c.start)} – ${fmtTime(c.end)} · Click to remove`;
+    el.style.width = Math.max(widthPct, 0.5) + '%';
+    el.title = `Clip ${i+1} · Click to remove`;
     el.onclick = () => removeManualClip(i);
     el.style.cursor = 'pointer';
     const lbl = document.createElement('div');
@@ -1135,16 +1195,21 @@ function renderTimeline() {
   });
 
   // clip list
-  if (n === 0) {
-    list.innerHTML = '';
-    return;
-  }
-  let html = `<div class="mc-list-title">Selected clips</div>`;
+  if (n === 0) { list.innerHTML = ''; return; }
+  let html = `<div class="mc-list-title">Selected clips — edit times directly</div>`;
   manualClips.forEach((c, i) => {
-    const dur = c.end - c.start;
+    const dur = Math.max(0, c.end - c.start);
     html += `<div class="mc-row">
       <div class="mc-num">${String(i+1).padStart(2,'0')}</div>
-      <div class="mc-time">${fmtTime(c.start)} → ${fmtTime(c.end)}</div>
+      <input class="mc-time-edit" value="${fmtTime(c.start)}" title="Start time"
+        onchange="updateClipTime(${i},'start',this.value)"
+        onblur="updateClipTime(${i},'start',this.value)"
+        onkeydown="if(event.key==='Enter')updateClipTime(${i},'start',this.value)">
+      <span class="mc-edit-arrow">→</span>
+      <input class="mc-time-edit" value="${fmtTime(c.end)}" title="End time"
+        onchange="updateClipTime(${i},'end',this.value)"
+        onblur="updateClipTime(${i},'end',this.value)"
+        onkeydown="if(event.key==='Enter')updateClipTime(${i},'end',this.value)">
       <div class="mc-dur">${dur}s</div>
       <button class="mc-del" onclick="removeManualClip(${i})" title="Remove">×</button>
     </div>`;
