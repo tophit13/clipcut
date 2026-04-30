@@ -174,6 +174,18 @@ def get_ydl_opts(extra=None):
     cookies = os.environ.get('YOUTUBE_COOKIES', '').strip()
     if cookies:
         cookies = cookies.replace('\\t', '\t').replace('\\n', '\n')
+        # Normalize each cookie line: ensure tab-separated (Railway may convert tabs to spaces)
+        fixed = []
+        for line in cookies.splitlines():
+            if line.startswith('#') or not line.strip():
+                fixed.append(line)
+            elif '\t' not in line:
+                # Re-split on whitespace with maxsplit=6 so value field is preserved
+                parts = line.split(None, 6)
+                fixed.append('\t'.join(parts) if len(parts) >= 7 else line)
+            else:
+                fixed.append(line)
+        cookies = '\n'.join(fixed)
         if not cookies.startswith('# Netscape'):
             cookies = '# Netscape HTTP Cookie File\n' + cookies
         tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
