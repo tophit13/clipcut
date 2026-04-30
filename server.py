@@ -137,11 +137,13 @@ def get_fetch_urls(url):
     return urls
 
 def _get_info_invidious(video_id):
-    """Fetch metadata from Invidious JSON API — no bot detection, no yt-dlp."""
+    """Fetch metadata + direct CDN stream URL from Invidious.
+    ?local=true makes Invidious return direct YouTube CDN (googlevideo.com) URLs
+    in formatStreams — these work from any IP because they are CDN-signed."""
     for inst in INVIDIOUS:
         try:
             r = req_lib.get(
-                f'{inst}/api/v1/videos/{video_id}',
+                f'{inst}/api/v1/videos/{video_id}?local=true',
                 timeout=15,
                 headers={'User-Agent': 'Mozilla/5.0'},
             )
@@ -150,6 +152,18 @@ def _get_info_invidious(video_id):
             d = r.json()
             if not d.get('lengthSeconds'):
                 continue
+
+            # Extract best combined stream URL (720p or 360p mp4, audio+video in one)
+            stream_url = ''
+            for fmt in d.get('formatStreams', []):
+                itag = str(fmt.get('itag', ''))
+                url  = fmt.get('url', '')
+                if itag == '22' and url:   # 720p — take immediately
+                    stream_url = url
+                    break
+                if itag == '18' and url:   # 360p fallback
+                    stream_url = url
+
             thumbs = d.get('videoThumbnails', [])
             thumb = next(
                 (t['url'] for t in thumbs if 'maxres' in t.get('quality', '')),
@@ -163,6 +177,7 @@ def _get_info_invidious(video_id):
                 'webpage_url':  f'https://www.youtube.com/watch?v={video_id}',
                 'original_url': f'https://www.youtube.com/watch?v={video_id}',
                 '_inv_inst':    inst,
+                '_stream_url':  stream_url,   # direct YouTube CDN URL
             }
         except Exception:
             continue
@@ -201,31 +216,35 @@ def _ffmpeg_clip(stream_url, start, duration, vf_filter, clip_path):
     except subprocess.TimeoutExpired:
         return False
 
-def _invidious_clip(vid, quality, start, duration, vf_filter, clip_path, preferred_inst=''):
-    """Try every Invidious instance to download one clip section via ffmpeg.
-    Uses ?local=true so Invidious redirects to a YouTube CDN URL —
-    Railway then downloads from CDN (googlevideo.com) which is not bot-detected.
-    Falls back to proxied stream if local redirect fails.
+def _invidious_clip(vid, quality, start, duration, vf_filter, clip_path,
+                    preferred_inst='', direct_stream_url=''):
+    """Download one clip section via ffmpeg. Strategy (in order):
+    1. Direct YouTube CDN URL from Invidious API (?local=true) — fastest, no proxy needed
+    2. /latest_version?local=true on each instance — Invidious redirects to CDN
+    3. /latest_version (proxied) on each instance — Invidious buffers the stream
     Returns (success: bool, working_inst: str)."""
-    itag = 37 if quality >= 1080 else (22 if quality >= 720 else 18)
-    fallback_itag = 22  # 720p combined mp4, most universally available
 
+    # 1. Direct CDN URL obtained at metadata time (most reliable — CDN is not IP-restricted)
+    if direct_stream_url:
+        if _ffmpeg_clip(direct_stream_url, start, duration, vf_filter, clip_path):
+            return True, preferred_inst
+
+    itag = 22 if quality >= 720 else 18  # combined mp4 streams only (no merge needed)
     instances = list(INVIDIOUS)
     if preferred_inst and preferred_inst in instances:
         instances.remove(preferred_inst)
         instances.insert(0, preferred_inst)
 
     for inst in instances:
-        # ?local=true: Invidious returns a redirect to YouTube CDN signed URL
-        # Railway follows the redirect and downloads from CDN directly
-        for try_itag in ([itag, fallback_itag] if itag != fallback_itag else [itag]):
-            local_url = f'{inst}/latest_version?id={vid}&itag={try_itag}&local=true'
-            if _ffmpeg_clip(local_url, start, duration, vf_filter, clip_path):
-                return True, inst
-            # If local redirect fails, try proxied (Invidious buffers the stream)
-            proxy_url = f'{inst}/latest_version?id={vid}&itag={try_itag}'
-            if _ffmpeg_clip(proxy_url, start, duration, vf_filter, clip_path):
-                return True, inst
+        # 2. Ask Invidious to redirect us to a fresh CDN URL
+        local_url = f'{inst}/latest_version?id={vid}&itag={itag}&local=true'
+        if _ffmpeg_clip(local_url, start, duration, vf_filter, clip_path):
+            return True, inst
+        # 3. Proxied stream through Invidious
+        proxy_url = f'{inst}/latest_version?id={vid}&itag={itag}'
+        if _ffmpeg_clip(proxy_url, start, duration, vf_filter, clip_path):
+            return True, inst
+
     return False, ''
 
 def ydl_extract(urls, opts):
@@ -518,8 +537,9 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
         vid  = extract_video_id(url)
         info = (_get_info_invidious(vid) if vid else None) or ydl_info_only(get_fetch_urls(url), get_ydl_opts(sid=sid))
         title    = info.get('title', 'clip')
-        inv_inst = info.get('_inv_inst', '')
-        dl_url   = f'{inv_inst}/watch?v={vid}' if inv_inst and vid else url
+        inv_inst   = info.get('_inv_inst', '')
+        direct_url = info.get('_stream_url', '')
+        dl_url     = f'{inv_inst}/watch?v={vid}' if inv_inst and vid else url
         log(f'Found "{title}". Preparing {len(clips)} manual clips...', 15)
 
         vf_filter = (
@@ -529,7 +549,7 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
         )
 
         log('Connecting to stream (no bot detection)...', 19)
-        working_inst = inv_inst  # start with the instance that served metadata
+        working_inst = inv_inst
 
         result_clips = []
         for i, clip in enumerate(clips):
@@ -542,7 +562,7 @@ def _process_manual(job_id, url, clips, quality, sid, ratio='16:9'):
             log(f'Encoding clip {i+1}/{len(clips)} ({start//60}:{start%60:02d} – {end//60}:{end%60:02d})...', pct)
 
             if vid:
-                ok, working_inst = _invidious_clip(vid, quality, start, duration, vf_filter, clip_path, working_inst)
+                ok, working_inst = _invidious_clip(vid, quality, start, duration, vf_filter, clip_path, working_inst, direct_url)
                 if not ok:
                     log(f'Warning: clip {i+1} — all Invidious instances failed, skipping', pct)
                     continue
@@ -883,7 +903,8 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
         )
 
         log('Connecting to stream (no bot detection)...', 19)
-        working_inst = info.get('_inv_inst', '')  # start with instance that served metadata
+        working_inst = info.get('_inv_inst', '')
+        direct_url   = info.get('_stream_url', '')
 
         for i, start in enumerate(starts):
             pct       = 20 + int((i + 1) / num_clips * 75)
@@ -892,7 +913,7 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             log(f'Downloading clip {i+1}/{num_clips} ({start//60}:{start%60:02d} – {(start+clip_len)//60}:{(start+clip_len)%60:02d})...', pct)
 
             if vid:
-                ok, working_inst = _invidious_clip(vid, quality, start, clip_len, vf_filter, clip_path, working_inst)
+                ok, working_inst = _invidious_clip(vid, quality, start, clip_len, vf_filter, clip_path, working_inst, direct_url)
                 if not ok:
                     log(f'Warning: clip {i+1} — all Invidious instances failed, skipping', pct)
                     continue
