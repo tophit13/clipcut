@@ -136,7 +136,7 @@ def _get_info_invidious(video_id):
         try:
             r = req_lib.get(
                 f'{inst}/api/v1/videos/{video_id}',
-                timeout=12,
+                timeout=15,
                 headers={'User-Agent': 'Mozilla/5.0'},
             )
             if r.status_code != 200:
@@ -161,6 +161,21 @@ def _get_info_invidious(video_id):
         except Exception:
             continue
     return None
+
+def _invidious_stream_url(inst, video_id, quality):
+    """Return an Invidious /latest_version stream URL for ffmpeg to consume directly."""
+    # itag 22 = 720p MP4 (combined), 18 = 360p MP4 (combined), 37 = 1080p MP4 (rare)
+    itag_by_quality = {2160: 37, 1440: 37, 1080: 37, 720: 22, 480: 18, 360: 18}
+    primary = itag_by_quality.get(int(quality), 22)
+    for itag in [primary, 22, 18]:
+        url = f'{inst}/latest_version?id={video_id}&itag={itag}'
+        try:
+            r = req_lib.head(url, timeout=10, allow_redirects=True)
+            if r.status_code == 200:
+                return r.url  # follow redirects to get the actual stream URL
+        except Exception:
+            pass
+    return f'{inst}/latest_version?id={video_id}&itag=22'  # best-effort fallback
 
 def ydl_extract(urls, opts):
     """Try each URL in sequence; return info dict from first that works."""
@@ -638,51 +653,68 @@ def _process(job_id, url, num_clips, clip_len, quality, sid, ai_detect=True, rat
             'crop=ih:ih'      if ratio == '1:1'  else
             None
         )
+
+        # Prefer Invidious stream URL (bypasses YouTube bot detection entirely)
+        inv_inst   = info.get('_inv_inst', '')
+        stream_url = _invidious_stream_url(inv_inst, vid, quality) if inv_inst and vid else ''
+        if stream_url:
+            log('Using Invidious stream (no bot detection)...', 19)
+
         for i, start in enumerate(starts):
             pct       = 20 + int((i + 1) / num_clips * 75)
             clip_name = f'clip_{i+1:02d}.mp4'
             clip_path = os.path.join(job_dir, clip_name)
-            raw_tmpl  = os.path.join(job_dir, f'raw_{i+1:02d}.%(ext)s')
             log(f'Downloading clip {i+1}/{num_clips} ({start//60}:{start%60:02d} – {(start+clip_len)//60}:{(start+clip_len)%60:02d})...', pct)
 
-            dl_opts = get_ydl_opts({
-                'format': fmt,
-                'outtmpl': raw_tmpl,
-                'download_ranges': yt_dlp.utils.download_range_func(None, [(start, start + clip_len)]),
-                'force_keyframes_at_cuts': True,
-                'socket_timeout': 60,
-                'retries': 3,
-            })
-            try:
-                with yt_dlp.YoutubeDL(dl_opts) as ydl:
-                    ydl.download([dl_url])
-            except Exception as e:
-                log(f'Warning: clip {i+1} download failed — {e}', pct)
-                continue
+            if stream_url:
+                # Download section directly via ffmpeg from Invidious stream
+                cmd = ['ffmpeg', '-ss', str(start), '-i', stream_url, '-t', str(clip_len)]
+                if vf_filter:
+                    cmd += ['-vf', vf_filter]
+                cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
+                result = subprocess.run(cmd, capture_output=True, timeout=300)
+                if result.returncode != 0:
+                    log(f'Warning: clip {i+1} ffmpeg error: {result.stderr.decode(errors="replace")[-300:]}', pct)
+                    continue
+            else:
+                # Fallback: yt-dlp section download
+                raw_tmpl = os.path.join(job_dir, f'raw_{i+1:02d}.%(ext)s')
+                dl_opts  = get_ydl_opts({
+                    'format': fmt,
+                    'outtmpl': raw_tmpl,
+                    'download_ranges': yt_dlp.utils.download_range_func(None, [(start, start + clip_len)]),
+                    'force_keyframes_at_cuts': True,
+                    'socket_timeout': 60,
+                    'retries': 3,
+                })
+                try:
+                    with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                        ydl.download([dl_url])
+                except Exception as e:
+                    log(f'Warning: clip {i+1} download failed — {e}', pct)
+                    continue
 
-            # Find the downloaded raw file
-            raw_path = None
-            for f in os.listdir(job_dir):
-                if f.startswith(f'raw_{i+1:02d}.') and not f.endswith('.part'):
-                    raw_path = os.path.join(job_dir, f)
-                    break
+                raw_path = None
+                for f in os.listdir(job_dir):
+                    if f.startswith(f'raw_{i+1:02d}.') and not f.endswith('.part'):
+                        raw_path = os.path.join(job_dir, f)
+                        break
 
-            if not raw_path or not os.path.exists(raw_path):
-                log(f'Warning: clip {i+1} file not found after download', pct)
-                continue
+                if not raw_path or not os.path.exists(raw_path):
+                    log(f'Warning: clip {i+1} file not found after download', pct)
+                    continue
 
-            # Re-encode with ffmpeg (apply crop if needed, ensure mp4)
-            cmd = ['ffmpeg', '-i', raw_path, '-t', str(clip_len)]
-            if vf_filter:
-                cmd += ['-vf', vf_filter]
-            cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
-            result = subprocess.run(cmd, capture_output=True)
-            if result.returncode != 0:
-                log(f'Warning: ffmpeg failed for clip {i+1}: {result.stderr.decode(errors="replace")[-300:]}', pct)
-            try:
-                os.unlink(raw_path)
-            except Exception:
-                pass
+                cmd = ['ffmpeg', '-i', raw_path, '-t', str(clip_len)]
+                if vf_filter:
+                    cmd += ['-vf', vf_filter]
+                cmd += ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', '-y', clip_path]
+                result = subprocess.run(cmd, capture_output=True)
+                if result.returncode != 0:
+                    log(f'Warning: ffmpeg failed for clip {i+1}: {result.stderr.decode(errors="replace")[-300:]}', pct)
+                try:
+                    os.unlink(raw_path)
+                except Exception:
+                    pass
 
             if os.path.exists(clip_path) and os.path.getsize(clip_path) > 0:
                 size_mb = round(os.path.getsize(clip_path) / 1024 / 1024, 1)
